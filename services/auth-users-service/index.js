@@ -2,7 +2,14 @@ const express = require('express');
 const pool = require('../../shared/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
+
+// Debug: verificar se JWT_SECRET está carregado
+console.log('🔍 Debug - JWT_SECRET:', process.env.JWT_SECRET ? 'DEFINIDO' : 'NÃO DEFINIDO');
+if (process.env.JWT_SECRET) {
+  console.log('🔍 Debug - JWT_SECRET (primeiros 10 chars):', process.env.JWT_SECRET.substring(0, 10) + '...');
+}
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const cors = require('cors');
@@ -48,14 +55,49 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
  */
 // Login
 app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, company_domain } = req.body;
   try {
-    const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
+    // Se fornecido company_domain, buscar empresa primeiro
+    let companyId = null;
+    if (company_domain) {
+      const [companyRows] = await pool.query('SELECT id FROM companies WHERE domain = ? AND is_active = 1', [company_domain]);
+      if (companyRows.length === 0) {
+        return res.status(401).json({ error: 'Empresa não encontrada ou inativa' });
+      }
+      companyId = companyRows[0].id;
+    }
+
+    // Buscar usuário com ou sem filtro de empresa
+    let query = 'SELECT u.*, c.name as company_name, c.domain as company_domain FROM users u LEFT JOIN companies c ON u.company_id = c.id WHERE u.username = ?';
+    let params = [username];
+    
+    if (companyId) {
+      query += ' AND u.company_id = ?';
+      params.push(companyId);
+    }
+    
+    const [rows] = await pool.query(query, params);
     const user = rows[0];
+    
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
+    if (!user.is_active) return res.status(401).json({ error: 'Usuário inativo' });
+    
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Senha inválida' });
-    const token = jwt.sign({ id: user.id, user_type: user.user_type }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    
+    // Atualizar último login
+    await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
+    
+    // Debug: verificar JWT_SECRET antes de gerar token
+    console.log('🔍 Debug - Gerando token para usuário:', user.username);
+    console.log('🔍 Debug - JWT_SECRET disponível:', !!process.env.JWT_SECRET);
+    
+    const token = jwt.sign({ 
+      id: user.id, 
+      user_type: user.user_type, 
+      company_id: user.company_id 
+    }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    
     // Montar objeto user sem o hash da senha
     const userResponse = {
       id: user.id,
@@ -63,7 +105,11 @@ app.post('/api/auth/login', async (req, res) => {
       name: user.full_name,
       email: user.email,
       role: user.user_type,
+      company_id: user.company_id,
+      company_name: user.company_name,
+      company_domain: user.company_domain,
       is_active: user.is_active,
+      last_login: user.last_login,
       created_at: user.created_at,
       updated_at: user.updated_at
     };
@@ -92,6 +138,22 @@ function authorize(roles = []) {
   };
 }
 
+// Middleware para verificar acesso à empresa (exceto para MASTER)
+function checkCompanyAccess() {
+  return (req, res, next) => {
+    if (req.user.user_type === 'MASTER') {
+      return next();
+    }
+    
+    const companyId = req.params.company_id || req.body.company_id;
+    if (companyId && req.user.company_id != companyId) {
+      return res.status(403).json({ error: 'Acesso negado a esta empresa' });
+    }
+    
+    next();
+  };
+}
+
 // Recuperação de senha (simulado)
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { username } = req.body;
@@ -106,21 +168,60 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Cadastro de usuário (apenas ADMIN)
-app.post('/api/users', authorize(['ADMIN']), async (req, res) => {
-  const { username, password, email, full_name, user_type } = req.body;
+// Listar usuários (apenas ADMIN e MASTER)
+app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
+  try {
+    let query = `
+      SELECT u.id, u.username, u.email, u.full_name, u.user_type, u.is_active, 
+             u.last_login, u.created_at, u.updated_at, c.name as company_name
+      FROM users u
+      LEFT JOIN companies c ON u.company_id = c.id
+    `;
+    let params = [];
+    
+    // Se não for MASTER, filtrar apenas usuários da empresa
+    if (req.user.user_type !== 'MASTER') {
+      query += ' WHERE u.company_id = ?';
+      params.push(req.user.company_id);
+    }
+    
+    query += ' ORDER BY u.created_at DESC';
+    
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cadastro de usuário (apenas ADMIN e MASTER)
+app.post('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
+  const { username, password, email, full_name, user_type, company_id } = req.body;
+  
+  // Determinar company_id
+  let targetCompanyId = company_id;
+  if (req.user.user_type !== 'MASTER') {
+    targetCompanyId = req.user.company_id;
+  }
+  
+  if (!targetCompanyId) {
+    return res.status(400).json({ error: 'Company ID é obrigatório' });
+  }
+  
   // Validação de senha forte
   if (!password || password.length < 8 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
     return res.status(400).json({ error: 'A senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula e número.' });
   }
-  // Validação de username único
-  const [exists] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
-  if (exists.length > 0) return res.status(400).json({ error: 'Username já cadastrado' });
+  
+  // Validação de username único por empresa
+  const [exists] = await pool.query('SELECT id FROM users WHERE username = ? AND company_id = ?', [username, targetCompanyId]);
+  if (exists.length > 0) return res.status(400).json({ error: 'Username já cadastrado nesta empresa' });
+  
   const hash = await bcrypt.hash(password, 10);
   try {
     await pool.query(
-      'INSERT INTO users (username, password_hash, email, full_name, user_type) VALUES (?, ?, ?, ?, ?)',
-      [username, hash, email, full_name, user_type]
+      'INSERT INTO users (company_id, username, password_hash, email, full_name, user_type) VALUES (?, ?, ?, ?, ?, ?)',
+      [targetCompanyId, username, hash, email, full_name, user_type]
     );
     res.status(201).json({ message: 'Usuário criado' });
   } catch (err) {

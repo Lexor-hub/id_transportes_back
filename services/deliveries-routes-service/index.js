@@ -1,111 +1,73 @@
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
-const app = express();
-app.use(express.json());
-
 const cors = require('cors');
-const multer = require('multer');
-const xml2js = require('xml2js');
-const fs = require('fs');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
-// Swagger setup
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
-    title: 'API Deliveries/Routes',
+    title: 'API Deliveries & Routes',
     version: '1.0.0',
-    description: 'Documentação da API de entregas e rotas'
+    description: 'API para gestão de entregas, rotas e ocorrências'
   }
 };
+
 const options = {
   swaggerDefinition,
   apis: ['./index.js'],
 };
+
 const swaggerSpec = swaggerJsdoc(options);
+
+const app = express();
+app.use(express.json());
+app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-app.use(cors({ origin: '*', credentials: true }));
-
-const upload = multer({ dest: 'uploads/xmls/' });
-
-/**
- * @swagger
- * /api/sefaz/import-xml:
- *   post:
- *     summary: Importa XML de nota fiscal do SEFAZ
- *     consumes:
- *       - multipart/form-data
- *     requestBody:
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             properties:
- *               xml:
- *                 type: string
- *                 format: binary
- *     responses:
- *       200:
- *         description: XML importado com sucesso
- */
-app.post('/api/sefaz/import-xml', upload.single('xml'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Arquivo não enviado' });
-  const xml = fs.readFileSync(req.file.path, 'utf8');
-  xml2js.parseString(xml, async (err, result) => {
-    if (err) return res.status(400).json({ error: 'XML inválido' });
-    try {
-      const nfe = result.nfeProc.NFe[0].infNFe[0];
-      const nf_number = nfe.ide[0].nNF[0];
-      const client_name = nfe.dest[0].xNome[0];
-      const delivery_address = nfe.dest[0].enderDest[0].xLgr[0] + ', ' + nfe.dest[0].enderDest[0].nro[0];
-      const merchandise_value = nfe.total[0].ICMSTot[0].vNF[0];
-      await pool.query(
-        'INSERT INTO delivery_notes (nf_number, client_name_extracted, delivery_address, merchandise_value, xml_data, status) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE client_name_extracted=?, delivery_address=?, merchandise_value=?, xml_data=?, status=?',
-        [nf_number, client_name, delivery_address, merchandise_value, xml, 'PENDING', client_name, delivery_address, merchandise_value, xml, 'PENDING']
-      );
-      res.json({ message: 'XML importado com sucesso', nf_number, client_name, delivery_address, merchandise_value });
-    } catch (e) {
-      res.status(400).json({ error: 'Estrutura de XML não reconhecida', details: e.message });
+// Configurar multer para upload de fotos de ocorrências
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'uploads/occurrences');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
-  });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'occurrence-' + uniqueSuffix + path.extname(file.originalname));
+  }
 });
 
-/**
- * @swagger
- * /api/deliveries:
- *   get:
- *     summary: Lista todas as entregas
- *     parameters:
- *       - in: query
- *         name: data
- *         schema:
- *           type: string
- *         description: Data da entrega
- *       - in: query
- *         name: cliente
- *         schema:
- *           type: string
- *         description: ID do cliente
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *         description: Status da entrega
- *     responses:
- *       200:
- *         description: Lista de entregas
- */
-// Middleware de autenticação e autorização
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Apenas arquivos JPG e PNG são permitidos'));
+    }
+  }
+});
+
+// Middleware de autenticação
 function authorize(roles = []) {
   return (req, res, next) => {
     const auth = req.headers.authorization;
     if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
     const token = auth.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a");
       if (roles.length && !roles.includes(decoded.user_type)) {
         return res.status(403).json({ error: 'Acesso negado' });
       }
@@ -117,156 +79,463 @@ function authorize(roles = []) {
   };
 }
 
-// Cadastro de entrega (ADMIN)
-app.post('/api/deliveries', authorize(['ADMIN']), async (req, res) => {
-  const { nf_number, client_id, delivery_address, delivery_volume, merchandise_value, products_description, status, delivery_date_expected } = req.body;
+/**
+ * @swagger
+ * /api/deliveries/{id}/occurrence:
+ *   post:
+ *     summary: Registrar ocorrência na entrega
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [reentrega, recusa, avaria]
+ *               description:
+ *                 type: string
+ *               photo:
+ *                 type: string
+ *                 format: binary
+ *               latitude:
+ *                 type: number
+ *               longitude:
+ *                 type: number
+ *     responses:
+ *       201:
+ *         description: Ocorrência registrada com sucesso
+ */
+app.post('/api/deliveries/:id/occurrence', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('photo'), async (req, res) => {
   try {
-    // Validação de NF única
-    const [exists] = await pool.query('SELECT id FROM delivery_notes WHERE nf_number = ?', [nf_number]);
-    if (exists.length > 0) return res.status(400).json({ error: 'NF já cadastrada' });
-    await pool.query(
-      'INSERT INTO delivery_notes (nf_number, client_id, delivery_address, delivery_volume, merchandise_value, products_description, status, delivery_date_expected) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [nf_number, client_id, delivery_address, delivery_volume, merchandise_value, products_description, status, delivery_date_expected]
+    const deliveryId = req.params.id;
+    const { type, description, latitude, longitude } = req.body;
+    const photo = req.file;
+
+    // Verificar se a entrega existe e pertence à empresa
+    const [deliveryRows] = await pool.query(
+      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [deliveryId, req.user.company_id]
     );
-    res.status(201).json({ message: 'Entrega cadastrada' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+
+    if (deliveryRows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    // Inserir ocorrência
+    const [result] = await pool.query(`
+      INSERT INTO delivery_occurrences (delivery_id, company_id, driver_id, type, description, photo_url, latitude, longitude, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      deliveryId,
+      req.user.company_id,
+      req.user.id,
+      type,
+      description,
+      photo ? photo.path : null,
+      latitude || null,
+      longitude || null,
+      req.user.id
+    ]);
+
+    const occurrenceId = result.insertId;
+
+    // Atualizar status da entrega se necessário
+    if (type === 'recusa') {
+      await pool.query(
+        'UPDATE delivery_notes SET status = ? WHERE id = ?',
+        ['REFUSED', deliveryId]
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        id: occurrenceId,
+        delivery_id: deliveryId,
+        type,
+        description,
+        photo_url: photo ? `/api/occurrences/${occurrenceId}/photo` : null,
+        created_at: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao registrar ocorrência:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Listar entregas com filtros
-app.get('/api/deliveries', async (req, res) => {
-  const { data, cliente, status } = req.query;
-  let sql = 'SELECT * FROM delivery_notes WHERE 1=1';
-  const params = [];
-  if (data) {
-    sql += ' AND delivery_date_expected = ?';
-    params.push(data);
-  }
-  if (cliente) {
-    sql += ' AND client_id = ?';
-    params.push(cliente);
-  }
-  if (status) {
-    sql += ' AND status = ?';
-    params.push(status);
-  }
+/**
+ * @swagger
+ * /api/occurrences:
+ *   get:
+ *     summary: Listar ocorrências
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: start_date
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: end_date
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: driver_id
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Lista de ocorrências
+ */
+app.get('/api/occurrences', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
   try {
-    const [rows] = await pool.query(sql, params);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    const { type, start_date, end_date, driver_id } = req.query;
+    
+    let query = `
+      SELECT 
+        o.*,
+        d.nf_number,
+        d.client_name,
+        d.client_address,
+        u.full_name as driver_name,
+        u2.full_name as created_by_name
+      FROM delivery_occurrences o
+      LEFT JOIN delivery_notes d ON o.delivery_id = d.id
+      LEFT JOIN users u ON o.driver_id = u.id
+      LEFT JOIN users u2 ON o.created_by = u2.id
+      WHERE o.company_id = ?
+    `;
+    const params = [req.user.company_id];
+
+    if (type) {
+      query += ' AND o.type = ?';
+      params.push(type);
+    }
+
+    if (start_date) {
+      query += ' AND DATE(o.created_at) >= ?';
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      query += ' AND DATE(o.created_at) <= ?';
+      params.push(end_date);
+    }
+
+    if (driver_id) {
+      query += ' AND o.driver_id = ?';
+      params.push(driver_id);
+    }
+
+    query += ' ORDER BY o.created_at DESC';
+
+    const [rows] = await pool.query(query, params);
+
+    res.json({
+      success: true,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar ocorrências:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Cadastro de rota (ADMIN)
-app.post('/api/routes', authorize(['ADMIN']), async (req, res) => {
-  const { driver_id, vehicle_id, status } = req.body;
+/**
+ * @swagger
+ * /api/occurrences/{id}:
+ *   get:
+ *     summary: Obter detalhes de uma ocorrência
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Detalhes da ocorrência
+ */
+app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
   try {
-    await pool.query(
-      'INSERT INTO routes (driver_id, vehicle_id, status) VALUES (?, ?, ?)',
-      [driver_id, vehicle_id, status]
-    );
-    res.status(201).json({ message: 'Rota criada' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+    const occurrenceId = req.params.id;
+
+    const [rows] = await pool.query(`
+      SELECT 
+        o.*,
+        d.nf_number,
+        d.client_name,
+        d.client_address,
+        u.full_name as driver_name,
+        u2.full_name as created_by_name
+      FROM delivery_occurrences o
+      LEFT JOIN delivery_notes d ON o.delivery_id = d.id
+      LEFT JOIN users u ON o.driver_id = u.id
+      LEFT JOIN users u2 ON o.created_by = u2.id
+      WHERE o.id = ? AND o.company_id = ?
+    `, [occurrenceId, req.user.company_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
+    }
+
+    res.json({
+      success: true,
+      data: rows[0]
+    });
+
+  } catch (error) {
+    console.error('Erro ao obter ocorrência:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Listar rotas
-app.get('/api/routes', async (req, res) => {
+/**
+ * @swagger
+ * /api/occurrences/{id}/photo:
+ *   get:
+ *     summary: Obter foto da ocorrência
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Foto da ocorrência
+ */
+app.get('/api/occurrences/:id/photo', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM routes');
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    const occurrenceId = req.params.id;
 
-// Detalhes de entrega
-app.get('/api/deliveries/:id', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM delivery_notes WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Entrega não encontrada' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Atualizar status da entrega
-app.put('/api/deliveries/:id/status', async (req, res) => {
-  const { status } = req.body;
-  try {
-    await pool.query('UPDATE delivery_notes SET status=? WHERE id=?', [status, req.params.id]);
-    res.json({ message: 'Status atualizado' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Registrar ocorrência
-app.put('/api/deliveries/:id/occurrence', async (req, res) => {
-  const { is_reattempt, refusal_reason, observations } = req.body;
-  try {
-    await pool.query(
-      'UPDATE delivery_notes SET is_reattempt=?, refusal_reason=?, observations=? WHERE id=?',
-      [is_reattempt, refusal_reason, observations, req.params.id]
-    );
-    res.json({ message: 'Ocorrência registrada' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Iniciar dia
-app.post('/api/routes/:id/start-day', async (req, res) => {
-  try {
-    await pool.query('UPDATE routes SET start_datetime=NOW(), status="IN_PROGRESS" WHERE id=?', [req.params.id]);
-    res.json({ message: 'Dia iniciado' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Iniciar rota
-app.post('/api/routes/:id/start-route', async (req, res) => {
-  try {
-    await pool.query('UPDATE routes SET status="IN_PROGRESS" WHERE id=?', [req.params.id]);
-    res.json({ message: 'Rota iniciada' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Finalizar rota
-app.post('/api/routes/:id/finish-route', async (req, res) => {
-  try {
-    await pool.query('UPDATE routes SET end_datetime=NOW(), status="COMPLETED" WHERE id=?', [req.params.id]);
-    res.json({ message: 'Rota finalizada' });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Entregas do motorista no dia
-app.get('/api/drivers/:driverId/today-deliveries', async (req, res) => {
-  try {
     const [rows] = await pool.query(
-      `SELECT dn.* FROM delivery_notes dn
-       JOIN route_deliveries rd ON dn.id = rd.delivery_note_id
-       JOIN routes r ON rd.route_id = r.id
-       WHERE r.driver_id = ? AND DATE(r.start_datetime) = CURDATE()`,
-      [req.params.driverId]
+      'SELECT photo_url FROM delivery_occurrences WHERE id = ? AND company_id = ?',
+      [occurrenceId, req.user.company_id]
     );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
+    }
+
+    const occurrence = rows[0];
+    
+    if (!occurrence.photo_url) {
+      return res.status(404).json({ error: 'Foto não encontrada' });
+    }
+
+    if (!fs.existsSync(occurrence.photo_url)) {
+      return res.status(404).json({ error: 'Arquivo não encontrado' });
+    }
+
+    res.sendFile(path.resolve(occurrence.photo_url));
+
+  } catch (error) {
+    console.error('Erro ao obter foto:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Integração SEFAZ (importação de XML) pode ser implementada aqui futuramente.
+/**
+ * @swagger
+ * /api/deliveries:
+ *   get:
+ *     summary: Listar entregas
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de entregas
+ */
+app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const { status, driver_id, client_id } = req.query;
+    
+    let query = `
+      SELECT 
+        d.*,
+        u.full_name as driver_name,
+        c.name as client_name,
+        c.address as client_address
+      FROM delivery_notes d
+      LEFT JOIN users u ON d.driver_id = u.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      WHERE d.company_id = ?
+    `;
+    const params = [req.user.company_id];
+
+    if (status) {
+      query += ' AND d.status = ?';
+      params.push(status);
+    }
+
+    if (driver_id) {
+      query += ' AND d.driver_id = ?';
+      params.push(driver_id);
+    }
+
+    if (client_id) {
+      query += ' AND d.client_id = ?';
+      params.push(client_id);
+    }
+
+    query += ' ORDER BY d.created_at DESC';
+
+    const [rows] = await pool.query(query, params);
+
+    res.json({
+      success: true,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar entregas:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/deliveries/{id}:
+ *   get:
+ *     summary: Obter detalhes de uma entrega
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Detalhes da entrega
+ */
+app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+
+    const [rows] = await pool.query(`
+      SELECT 
+        d.*,
+        u.full_name as driver_name,
+        c.name as client_name,
+        c.address as client_address,
+        c.phone as client_phone
+      FROM delivery_notes d
+      LEFT JOIN users u ON d.driver_id = u.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      WHERE d.id = ? AND d.company_id = ?
+    `, [deliveryId, req.user.company_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    // Buscar ocorrências da entrega
+    const [occurrences] = await pool.query(
+      'SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY created_at DESC',
+      [deliveryId]
+    );
+
+    const delivery = rows[0];
+    delivery.occurrences = occurrences;
+
+    res.json({
+      success: true,
+      data: delivery
+    });
+
+  } catch (error) {
+    console.error('Erro ao obter entrega:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/deliveries/{id}/status:
+ *   put:
+ *     summary: Atualizar status da entrega
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 enum: [PENDING, IN_TRANSIT, DELIVERED, CANCELLED, REFUSED]
+ *               notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Status atualizado com sucesso
+ */
+app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+    const { status, notes } = req.body;
+
+    // Verificar se a entrega existe e pertence à empresa
+    const [deliveryRows] = await pool.query(
+      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [deliveryId, req.user.company_id]
+    );
+
+    if (deliveryRows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    // Atualizar status
+    await pool.query(
+      'UPDATE delivery_notes SET status = ?, notes = ?, updated_at = NOW() WHERE id = ?',
+      [status, notes, deliveryId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Status atualizado com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao atualizar status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 if (require.main === module) {
-  app.listen(3003, () => console.log('Deliveries/Routes Service rodando na porta 3003'));
+  app.listen(3003, () => console.log('Deliveries & Routes Service rodando na porta 3003'));
 }
+
 module.exports = app; 
