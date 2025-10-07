@@ -1,29 +1,45 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
-const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-if (missingEnv.length) {
-  throw new Error(`Missing database environment variables: ${missingEnv.join(', ')}`);
-}
+let pool;
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: Number(process.env.DB_PORT),
-  waitForConnections: true,
-  connectionLimit: 15, // 🔧 Aumentado para suportar múltiplos serviços
-  queueLimit: 0,
-  acquireTimeout: 60000, // 🔧 60 segundos - mais tempo para conexões lentas
-  idleTimeout: 600000, // 🔧 10 minutos - conexões ficam ativas por mais tempo
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0,
-  // 🔧 Configurações válidas para mysql2
-  multipleStatements: false,
-  dateStrings: false
-});
+// 🔧 Lógica aprimorada para suportar Railway (DATABASE_URL) e desenvolvimento local
+if (process.env.DATABASE_URL) {
+  console.log('🗄️ Configurando pool de conexões MySQL via DATABASE_URL (Railway)...');
+  pool = mysql.createPool({
+    uri: process.env.DATABASE_URL, // Usa a URL de conexão completa
+    waitForConnections: true,
+    connectionLimit: 15,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+  });
+} else {
+  // Fallback para variáveis de ambiente separadas (ambiente de desenvolvimento)
+  const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
+  const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+  if (missingEnv.length) {
+    throw new Error(`Missing local database environment variables: ${missingEnv.join(', ')}`);
+  }
+
+  console.log('🗄️ Configurando pool de conexões MySQL via variáveis de ambiente locais...');
+  pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: Number(process.env.DB_PORT),
+    waitForConnections: true,
+    connectionLimit: 15,
+    queueLimit: 0,
+    // 🔧 'acquireTimeout' é inválido para o pool. A biblioteca mysql2 lida com isso internamente.
+    // Removendo 'acquireTimeout' e 'idleTimeout' que são para conexões individuais, não para o pool.
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    multipleStatements: false,
+    dateStrings: false
+  });
+}
 
 // 🔧 TRATAMENTO DE ERROS E RECONEXÃO AUTOMÁTICA
 // Adicionar listeners para eventos do pool
@@ -64,11 +80,5 @@ pool.executeWithRetry = async function(query, params, maxRetries = 3) {
     }
   }
 };
-
-console.log('🗄️ Pool de conexões MySQL configurado com:');
-console.log('   - Limite de conexões: 15');
-console.log('   - Timeout de aquisição: 60000ms');
-console.log('   - Idle timeout: 600000ms');
-console.log('   - Keep alive habilitado');
 
 module.exports = pool;
