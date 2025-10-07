@@ -1,0 +1,1600 @@
+﻿require('dotenv').config();
+const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const pool = require('../../shared/db');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
+const xml2js = require('xml2js');
+const mammoth = require('mammoth');
+const pdfParse = require('pdf-parse');
+const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
+const { Storage } = require('@google-cloud/storage');
+
+const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
+
+const OCR_CONFIG = {
+  documentAIProjectId: process.env.DOCUMENT_AI_PROJECT_ID,
+  documentAILocation: process.env.DOCUMENT_AI_LOCATION || 'us',
+  documentAIProcessorId: process.env.DOCUMENT_AI_PROCESSOR_ID
+};
+
+// Centralizar a inicialização dos clientes do Google Cloud
+const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+let documentAIClient = null;
+let storage = null;
+let bucket = null;
+
+if (hasGoogleCredentials) {
+  try {
+    documentAIClient = new DocumentProcessorServiceClient();
+    storage = new Storage();
+    if (process.env.GCS_BUCKET_NAME) {
+      bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
+      console.log('✅ Google Cloud Storage configurado com sucesso');
+    }
+  } catch (error) {
+    console.warn('⚠️ Erro ao configurar Google Cloud Services:', error.message);
+    console.warn('⚠️ Usando armazenamento local como fallback.');
+  }
+} else {
+  console.warn('⚠️ Google Cloud Storage não configurado. Usando armazenamento local.');
+}
+
+const swaggerDefinition = {
+  openapi: '3.0.0',
+  info: {
+    title: 'API Deliveries & Routes',
+    version: '1.0.0',
+    description: 'API para gestão de entregas, rotas e ocorrências'
+  }
+};
+
+const options = {
+  swaggerDefinition,
+  apis: ['./index.js'],
+};
+
+const swaggerSpec = swaggerJsdoc(options);
+
+const app = express();
+app.use(express.json());
+app.use(cors({ origin: ['http://localhost:8080', 'http://localhost:8081'], credentials: true }));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Função para enviar arquivo ao Google Cloud Storage
+async function uploadToGCS(file, folder = 'receipts') {
+  if (!file) {
+    throw new Error('Arquivo não fornecido para upload.');
+  }
+
+  // Se o bucket não estiver configurado, salva localmente
+  if (!bucket) {
+    const uploadDir = path.join(__dirname, `uploads/${folder}`);
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '')}`;
+    const filePath = path.join(uploadDir, uniqueName);
+    fs.writeFileSync(filePath, file.buffer || file.path);
+    const localUrl = `/uploads/${folder}/${uniqueName}`;
+    return { publicUrl: localUrl, gcsPath: filePath };
+  }
+
+  // Upload para o Google Cloud Storage
+  return new Promise((resolve, reject) => {
+    const uniqueName = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '')}`;
+    const blob = bucket.file(uniqueName);
+    const blobStream = blob.createWriteStream({
+      resumable: false,
+      contentType: file.mimetype
+    });
+
+    blobStream.on('error', err => reject(err));
+    blobStream.on('finish', () => {
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${blob.name}`;
+      resolve({ publicUrl, gcsPath: blob.name });
+    });
+
+    if (file.buffer) {
+      blobStream.end(file.buffer);
+    } else if (file.path) {
+      fs.createReadStream(file.path).pipe(blobStream);
+    } else {
+      reject(new Error('Arquivo inválido: nem buffer nem path foram fornecidos'));
+    }
+  });
+}
+
+function extractSefazDataFromText(text) {
+  try {
+    const norm = (s) => (s ? String(s).trim() : '');
+    const clean = (s) => norm(s).replace(/\s+/g, ' ');
+    const digits = (s) => norm(s).replace(/\D+/g, '');
+
+    const chRegexes = [
+      /chave\s*(?:de\s*acesso)?\s*[:\-]?\s*([\d\s\.]{30,80})/i,
+      /(\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{3})/
+    ];
+    let chNFe = '';
+    for (const r of chRegexes) {
+      const m = text.match(r);
+      if (m) { chNFe = digits(m[1] || m[0]); break; }
+    }
+    if (chNFe.length > 44) chNFe = chNFe.slice(-44);
+
+    const nfRegexes = [
+      /n[Âºo]\s*(?:da\s*)?nota\s*fiscal[:\-\s]*([0-9]{1,9})/i,
+      /n[Âºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eÃ©]rie/i,
+      /n[Âºo]\s*nf[:\-\s]*([0-9]{1,9})/i,
+      /n\.?\s*nf-?e?\s*[:\-\s]*([0-9]{1,9})/i,
+      /nfe\s*n[Âºo]\.?\s*[:\-\s]*(\d{1,9})/i,
+      /nro\.?\s*(\d{1,9})\s*s[eÃ©]rie/i,
+      /nf-e\s*s[eÃ©]rie[:\-\s]*\d+\s*n[Âºo]\.?[:\-\s]*(\d{1,9})/i
+    ];
+
+    let nfNumber = '';
+    for (const r of nfRegexes) {
+      const m = text.match(r);
+      if (m) { nfNumber = m[1]; break; }
+    }
+
+    const serieRegexes = [
+      /s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
+      /nf-e\s*s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
+    ];
+
+    let serie = '';
+    for (const r of serieRegexes) {
+      const m = text.match(r);
+      if (m) { serie = m[1]; break; }
+    }
+
+    const emitenteRegexes = [
+      /emitente[:\-\s]*([^\n\r]{3,120})/i,
+      /raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+    ];
+
+    let xNomeEmit = '';
+    for (const r of emitenteRegexes) {
+      const m = text.match(r);
+      if (m) { xNomeEmit = clean(m[1]); break; }
+    }
+
+    const destRegexes = [
+      /destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*do\s*destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /destinat[aÃ¡]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+    ];
+
+    let xNomeDest = '';
+    for (const r of destRegexes) {
+      const m = text.match(r);
+      if (m) { xNomeDest = clean(m[1]); break; }
+    }
+
+    const cnpjCpfRegexes = [
+      /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g,
+      /\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g
+    ];
+
+    let cnpjCpfMatches = [];
+    for (const r of cnpjCpfRegexes) {
+      const matches = [...text.matchAll(r)].map(m => digits(m[0]));
+      if (matches.length > 0) {
+        cnpjCpfMatches = [...cnpjCpfMatches, ...matches];
+      }
+    }
+
+    const uniq = Array.from(new Set(cnpjCpfMatches)).filter(Boolean);
+
+    const enderecoRegexes = [
+      /endere[Ã§c]o[:\-\s]*([^\n\r]{3,120})/i,
+      /logradouro[:\-\s]*([^\n\r]{3,120})/i
+    ];
+
+    let endereco = '';
+    for (const r of enderecoRegexes) {
+      const m = text.match(r);
+      if (m) { endereco = clean(m[1]); break; }
+    }
+
+    const cepMatch = text.match(/CEP[:\-\s]*([0-9]{5}-?[0-9]{3})/i);
+    const cep = cepMatch ? cepMatch[1] : '';
+
+    const municipioMatch = text.match(/munic[Ã­i]pio[:\-\s]*([^\n\r]{3,50})/i);
+    const municipio = municipioMatch ? clean(municipioMatch[1]) : '';
+
+    const ufMatch = text.match(/UF[:\-\s]*([A-Z]{2})/i);
+    const uf = ufMatch ? ufMatch[1] : '';
+
+    const valorRegexes = [
+      /valor\s*total\s*da\s*nota[:\-\s]*([0-9\.,]{1,20})/i,
+      /valor\s*total[:\-\s]*([0-9\.,]{1,20})/i
+    ];
+
+    let valorNota = '';
+    for (const r of valorRegexes) {
+      const m = text.match(r);
+      if (m) { valorNota = m[1].replace(/\./g, '').replace(',', '.'); break; }
+    }
+
+    const volumeMatch = text.match(/quantidade\s*de\s*volume\(?s?\)?[:\-\s]*([0-9]{1,5})/i);
+    const volume = volumeMatch ? volumeMatch[1] : '';
+
+    const pesoBrutoMatch = text.match(/peso\s*bruto[:\-\s]*([0-9\.,]{1,10})/i);
+    const pesoBruto = pesoBrutoMatch ? pesoBrutoMatch[1].replace(/\./g, '').replace(',', '.') : '';
+
+    const pesoLiquidoMatch = text.match(/peso\s*l[Ã­i]quido[:\-\s]*([0-9\.,]{1,10})/i);
+    const pesoLiquido = pesoLiquidoMatch ? pesoLiquidoMatch[1].replace(/\./g, '').replace(',', '.') : '';
+
+    let enderecoCompleto = endereco;
+    if (municipio) {
+      enderecoCompleto += enderecoCompleto ? `, ${municipio}` : municipio;
+    }
+    if (uf) {
+      enderecoCompleto += enderecoCompleto ? ` - ${uf}` : uf;
+    }
+    if (cep) {
+      enderecoCompleto += enderecoCompleto ? `, CEP: ${cep}` : `CEP: ${cep}`;
+    }
+
+    return {
+      chNFe,
+      nfNumber: nfNumber || '',
+      serie: serie || '',
+      dhEmi: '',
+      emitente: {
+        cnpj: uniq[0] || '',
+        xNome: xNomeEmit,
+        enderEmit: {
+          xLgr: endereco,
+          xMun: municipio,
+          UF: uf,
+          CEP: cep,
+          xEndCompleto: enderecoCompleto
+        }
+      },
+      destinatario: {
+        cnpj: uniq[1] || '',
+        xNome: xNomeDest,
+        enderDest: {
+          xLgr: endereco,
+          xMun: municipio,
+          UF: uf,
+          CEP: cep,
+          xEndCompleto: enderecoCompleto
+        }
+      },
+      valores: {
+        vNF: valorNota,
+        vProd: valorNota
+      },
+      transporte: {
+        modFrete: '',
+        transportadora: null,
+        volumes: {
+          qVol: volume || '1',
+          esp: '',
+          pesoL: pesoLiquido || '0',
+          pesoB: pesoBruto || '0'
+        }
+      }
+    };
+  } catch (e) {
+    throw new Error(`Erro ao extrair dados do texto: ${e.message}`);
+  }
+}
+
+async function ensureInvoiceTables() {
+  const createDetailsTable = `
+    CREATE TABLE IF NOT EXISTS delivery_invoice_details (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      delivery_note_id INT NOT NULL,
+      nf_data JSON,
+      remetente JSON,
+      destinatario JSON,
+      valores JSON,
+      transportadora JSON,
+      volumes JSON,
+      impostos JSON,
+      informacoes_complementares TEXT,
+      raw_text LONGTEXT,
+      raw_fields JSON,
+      document_ai_confidence DECIMAL(10,4),
+      document_ai_entities JSON,
+      metadata JSON,
+      status VARCHAR(50) DEFAULT 'PENDENTE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_note_id) REFERENCES delivery_notes(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
+  const createItemsTable = `
+    CREATE TABLE IF NOT EXISTS delivery_invoice_items (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      delivery_note_id INT NOT NULL,
+      position INT DEFAULT 0,
+      product_code VARCHAR(100),
+      description TEXT,
+      quantity DECIMAL(15,4),
+      unit VARCHAR(20),
+      unit_price DECIMAL(15,4),
+      total_price DECIMAL(15,4),
+      ncm VARCHAR(20),
+      cfop VARCHAR(20),
+      raw_data JSON,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_note_id) REFERENCES delivery_notes(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
+  const createInstallmentsTable = `
+    CREATE TABLE IF NOT EXISTS delivery_invoice_installments (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      delivery_note_id INT NOT NULL,
+      position INT DEFAULT 0,
+      installment_number VARCHAR(50),
+      amount DECIMAL(15,2),
+      due_date DATE,
+      raw_data JSON,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (delivery_note_id) REFERENCES delivery_notes(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
+  try {
+    await pool.query(createDetailsTable);
+    await pool.query(createItemsTable);
+    await pool.query(createInstallmentsTable);
+  } catch (error) {
+    console.error('Erro ao garantir tabelas auxiliares de notas fiscais:', error);
+    throw error;
+  }
+}
+
+const ensureInvoiceTablesPromise = ensureInvoiceTables();
+
+function normalizeNumericString(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+  return String(value).trim();
+}
+
+function parseDecimal(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const normalized = String(value)
+    .replace(/[^0-9.,-]/g, '')
+    .replace(/\.(?=.*\.)/g, '')
+    .replace(',', '.');
+  const parsed = parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseInteger(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.trunc(value) : null;
+  }
+  const numeric = String(value).replace(/[^0-9-]/g, '');
+  const parsed = parseInt(numeric, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return !isNaN(value.getTime()) ? value.toISOString().split('T')[0] : null;
+  }
+  const str = String(value).trim();
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)) {
+    return str.substring(0, 10);
+  }
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) {
+    const [day, month, year] = str.split('/');
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+  const timestamp = Date.parse(str);
+  if (!Number.isNaN(timestamp)) {
+    return new Date(timestamp).toISOString().split('T')[0];
+  }
+  return null;
+}
+
+function toJsonOrNull(value) {
+  if (value === undefined || value === null) return null;
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    console.warn('Falha ao serializar JSON:', error);
+    return null;
+  }
+}
+
+function buildAddress(party) {
+  if (!party) return '';
+  const segments = [party.endereco, party.municipio, party.uf, party.cep]
+    .map(part => (part ? String(part).trim() : ''))
+    .filter(Boolean);
+  const uniqueSegments = [...new Set(segments)];
+  return uniqueSegments.join(', ');
+}
+
+function mapStatus(input) {
+  if (!input) return 'PENDING'; // Mude para o valor ENUM correto
+  const normalized = String(input).trim().toUpperCase();
+  if (['PENDENTE'].includes(normalized)) return 'PENDING';
+  if (['IN_TRANSIT', 'EM TRANSITO', 'EM TRÂNSITO', 'EM_TRANSITO'].includes(normalized)) return 'IN_TRANSIT';
+  if (['DELIVERED', 'ENTREGUE'].includes(normalized)) return 'DELIVERED';
+  if (['CANCELED', 'CANCELLED', 'CANCELADO'].includes(normalized)) return 'CANCELED';
+  if (['REFUSED', 'RECUSADO'].includes(normalized)) return 'REFUSED';
+  return 'PENDING'; // Mude para o valor ENUM padrão
+}
+
+function deepMerge(target, source) {
+  const output = Array.isArray(target) ? [...target] : { ...target };
+  if (Array.isArray(source)) {
+    return [...source];
+  }
+  Object.keys(source || {}).forEach((key) => {
+    const value = source[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      output[key] = deepMerge(output[key] || {}, value);
+    } else {
+      output[key] = value;
+    }
+  });
+  return output;
+}
+
+function normalizeDeliveryPayload(payload = {}) {
+  const parseJsonIfString = (value) => {
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        console.warn('Falha ao converter JSON recebido:', value);
+        return value;
+      }
+    }
+    return value;
+  };
+
+  const toArray = (value) => {
+    const parsed = parseJsonIfString(value);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (parsed === undefined || parsed === null || parsed === '') {
+      return [];
+    }
+    return [parsed];
+  };
+
+  const normalizedPayload = {
+    ...payload,
+    deliveryData: parseJsonIfString(payload.deliveryData),
+    sefazData: parseJsonIfString(payload.sefazData),
+    nf_data: parseJsonIfString(payload.nf_data),
+    remetente: parseJsonIfString(payload.remetente),
+    destinatario: parseJsonIfString(payload.destinatario),
+    valores: parseJsonIfString(payload.valores),
+    transportadora: parseJsonIfString(payload.transportadora),
+    volumes: parseJsonIfString(payload.volumes),
+    impostos: parseJsonIfString(payload.impostos),
+    duplicatas: toArray(payload.duplicatas),
+    itens_de_linha: toArray(payload.itens_de_linha),
+    summary: parseJsonIfString(payload.summary),
+    raw_fields: parseJsonIfString(payload.raw_fields || payload.rawFields),
+    raw_text: payload.raw_text || payload.rawText,
+    document_ai_confidence: payload.document_ai_confidence ?? payload.documentAIConfidence,
+    document_ai_entities: parseJsonIfString(payload.document_ai_entities ?? payload.documentAIEntities),
+    isSefazValid: payload.isSefazValid ?? payload.is_sefaz_valid
+  };
+
+  const baseStructured = {
+    nf_data: {
+      numero: '',
+      serie: '',
+      chave_acesso: '',
+      data_emissao: '',
+      data_saida: '',
+      protocolo_autorizacao: ''
+    },
+    remetente: {
+      razao_social: '',
+      cnpj_cpf: '',
+      endereco: '',
+      municipio: '',
+      uf: '',
+      cep: '',
+      telefone: '',
+      inscricao_estadual: ''
+    },
+    destinatario: {
+      razao_social: '',
+      cnpj_cpf: '',
+      endereco: '',
+      municipio: '',
+      uf: '',
+      cep: '',
+      telefone: '',
+      inscricao_estadual: ''
+    },
+    valores: {
+      valor_total_nota: '',
+      valor_total_produtos: '',
+      valor_frete: '',
+      outras_despesas: '',
+      desconto: '',
+      valor_seguro: '',
+      valor_ipi: '',
+      valor_icms: '',
+      valor_total_tributos: ''
+    },
+    transportadora: {
+      razao_social: '',
+      cnpj_cpf: '',
+      endereco: '',
+      municipio: '',
+      uf: '',
+      cep: '',
+      telefone: '',
+      inscricao_estadual: ''
+    },
+    volumes: {
+      quantidade: '',
+      especie: '',
+      marca: '',
+      numero: '',
+      peso_bruto: '',
+      peso_liquido: ''
+    },
+    impostos: {
+      base_calculo_icms: '',
+      valor_icms: '',
+      valor_total_tributos: '',
+      valor_icms_st: '',
+      valor_ipi: ''
+    },
+    duplicatas: [],
+    itens_de_linha: [],
+    informacoes_complementares: '',
+    status: normalizedPayload.status || normalizedPayload.deliveryData?.status || 'PENDENTE',
+    raw_text: normalizedPayload.raw_text || null,
+    raw_fields: normalizedPayload.raw_fields || null,
+    document_ai_confidence: normalizedPayload.document_ai_confidence ?? null,
+    document_ai_entities: normalizedPayload.document_ai_entities || null
+  };
+
+  const summary = {
+    nf_number: '',
+    client_name: '',
+    client_address: '',
+    merchandise_value: '',
+    volume: '',
+    weight: '',
+    issue_date: '',
+    due_date: '',
+    client_cnpj: ''
+  };
+
+  if (normalizedPayload.summary && typeof normalizedPayload.summary === 'object') {
+    Object.assign(summary, normalizedPayload.summary);
+  }
+
+  const deliveryData = normalizedPayload.deliveryData;
+  if (deliveryData && typeof deliveryData === 'object') {
+    summary.nf_number = deliveryData.nfNumber || summary.nf_number;
+    summary.client_name = deliveryData.clientName || summary.client_name;
+    summary.client_address = deliveryData.deliveryAddress || summary.client_address;
+    summary.merchandise_value = deliveryData.merchandiseValue || summary.merchandise_value;
+    summary.volume = deliveryData.volume || summary.volume;
+    summary.weight = deliveryData.weight || summary.weight;
+    summary.issue_date = deliveryData.issueDate || summary.issue_date;
+    summary.due_date = deliveryData.dueDate || summary.due_date;
+    summary.client_cnpj = deliveryData.clientCnpj || summary.client_cnpj;
+  }
+
+  const mergeSection = (sectionKey) => {
+    const section = normalizedPayload[sectionKey];
+    if (section && typeof section === 'object') {
+      baseStructured[sectionKey] = deepMerge(baseStructured[sectionKey], section);
+    }
+  };
+
+  mergeSection('nf_data');
+  mergeSection('remetente');
+  mergeSection('destinatario');
+  mergeSection('valores');
+  mergeSection('transportadora');
+  mergeSection('volumes');
+  mergeSection('impostos');
+
+  if (Array.isArray(normalizedPayload.duplicatas)) {
+    baseStructured.duplicatas = normalizedPayload.duplicatas;
+  }
+  if (Array.isArray(normalizedPayload.itens_de_linha)) {
+    baseStructured.itens_de_linha = normalizedPayload.itens_de_linha;
+  }
+  if (typeof normalizedPayload.informacoes_complementares === 'string') {
+    baseStructured.informacoes_complementares = normalizedPayload.informacoes_complementares;
+  }
+
+  const sefazData = normalizedPayload.sefazData || {};
+  if (sefazData && typeof sefazData === 'object') {
+    baseStructured.nf_data.numero = baseStructured.nf_data.numero || normalizeNumericString(sefazData.nfNumber);
+    baseStructured.nf_data.serie = baseStructured.nf_data.serie || normalizeNumericString(sefazData.serie);
+    baseStructured.nf_data.data_emissao = baseStructured.nf_data.data_emissao || normalizeNumericString(sefazData.dhEmi || sefazData.dataEmissao);
+    baseStructured.nf_data.chave_acesso = baseStructured.nf_data.chave_acesso || normalizeNumericString(sefazData.chNFe || sefazData.chave_acesso);
+    baseStructured.destinatario.razao_social = baseStructured.destinatario.razao_social || normalizeNumericString(sefazData.destinatario?.xNome);
+    baseStructured.destinatario.cnpj_cpf = baseStructured.destinatario.cnpj_cpf || normalizeNumericString(sefazData.destinatario?.cnpj || sefazData.destinatario?.cpf);
+    if (sefazData.destinatario?.enderDest) {
+      baseStructured.destinatario.endereco = baseStructured.destinatario.endereco || normalizeNumericString(sefazData.destinatario.enderDest.xLgr);
+      baseStructured.destinatario.municipio = baseStructured.destinatario.municipio || normalizeNumericString(sefazData.destinatario.enderDest.xMun);
+      baseStructured.destinatario.uf = baseStructured.destinatario.uf || normalizeNumericString(sefazData.destinatario.enderDest.UF);
+      baseStructured.destinatario.cep = baseStructured.destinatario.cep || normalizeNumericString(sefazData.destinatario.enderDest.CEP);
+      baseStructured.destinatario.telefone = baseStructured.destinatario.telefone || normalizeNumericString(sefazData.destinatario.enderDest.fone);
+    }
+    baseStructured.valores.valor_total_nota = baseStructured.valores.valor_total_nota || normalizeNumericString(sefazData.valores?.vNF);
+    baseStructured.valores.valor_total_produtos = baseStructured.valores.valor_total_produtos || normalizeNumericString(sefazData.valores?.vProd);
+    baseStructured.valores.valor_frete = baseStructured.valores.valor_frete || normalizeNumericString(sefazData.valores?.vFrete);
+    baseStructured.valores.outras_despesas = baseStructured.valores.outras_despesas || normalizeNumericString(sefazData.valores?.vOutro);
+    baseStructured.valores.desconto = baseStructured.valores.desconto || normalizeNumericString(sefazData.valores?.vDesc);
+    if (sefazData.transporte?.volumes) {
+      baseStructured.volumes.quantidade = baseStructured.volumes.quantidade || normalizeNumericString(sefazData.transporte.volumes.qVol);
+      baseStructured.volumes.especie = baseStructured.volumes.especie || normalizeNumericString(sefazData.transporte.volumes.esp);
+      baseStructured.volumes.peso_liquido = baseStructured.volumes.peso_liquido || normalizeNumericString(sefazData.transporte.volumes.pesoL);
+      baseStructured.volumes.peso_bruto = baseStructured.volumes.peso_bruto || normalizeNumericString(sefazData.transporte.volumes.pesoB);
+    }
+    baseStructured.transportadora = deepMerge(baseStructured.transportadora, sefazData.transporte?.transportadora || {});
+  }
+
+  const isSefazValid = Boolean(normalizedPayload.isSefazValid);
+
+  return { structured: baseStructured, summary, isSefazValid };
+}
+
+const storage_multer = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'uploads/occurrences');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'occurrence-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload_multer = multer({
+  storage: storage_multer,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Apenas arquivos JPG e PNG são permitidos'));
+    }
+  }
+});
+
+const xmlStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(__dirname, 'uploads/sefaz');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'sefaz-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const uploadSefaz = multer({
+  storage: xmlStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'text/xml',
+      'application/xml',
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+    const allowedExts = ['.xml', '.pdf', '.docx'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowedMimes.includes(file.mimetype) || allowedExts.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Tipo de arquivo não suportado. Envie XML, PDF ou DOCX.'), false);
+    }
+  }
+});
+
+function authorize(roles = []) {
+  return (req, res, next) => {
+    const auth = req.headers.authorization;
+    if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
+    const token = auth.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, jwtSecret);
+      if (roles.length && !roles.includes(decoded.user_type)) {
+        return res.status(403).json({ error: 'Acesso negado' });
+      }
+      req.user = decoded;
+      next();
+    } catch (err) {
+      res.status(401).json({ error: 'Token inválido' });
+    }
+  };
+}
+
+function extractSefazData(xmlData) {
+  try {
+    const first = (v) => Array.isArray(v) ? v[0] : v;
+    const normStr = (v) => (v === undefined || v === null) ? '' : String(v).trim();
+    const nfeCandidate = first(xmlData?.nfeProc?.NFe) || first(xmlData?.NFe) || first(xmlData?.procNFe?.NFe) || first(xmlData?.enviNFe?.NFe);
+    const nfe = first(nfeCandidate);
+    if (!nfe) throw new Error('Estrutura XML inválida: NFe não encontrada');
+    const infNFe = first(nfe.infNFe);
+    if (!infNFe) throw new Error('Informações da NFe (infNFe) não encontradas');
+    const ide = first(infNFe.ide) || {};
+    const emit = first(infNFe.emit) || {};
+    const dest = first(infNFe.dest) || {};
+    const total = first(first(infNFe.total)?.ICMSTot) || {};
+    const transp = first(infNFe.transp) || {};
+    const volList = transp?.vol ? (Array.isArray(transp.vol) ? transp.vol : [transp.vol]) : [];
+    const vol = first(volList);
+    const chNFe = normStr(xmlData?.protNFe?.infProt?.chNFe) || normStr(first(xmlData?.nfeProc?.protNFe)?.infProt?.chNFe) || (infNFe?.$?.Id ? normStr(String(infNFe.$.Id).replace(/^NFe/, '')) : '');
+    const normalizeAddress = (addr) => {
+      const a = first(addr) || {};
+      return {
+        xLgr: normStr(a.xLgr),
+        nro: normStr(a.nro),
+        xBairro: normStr(a.xBairro),
+        xMun: normStr(a.xMun),
+        UF: normStr(a.UF),
+        CEP: normStr(a.CEP),
+        xCpl: normStr(a.xCpl)
+      };
+    };
+    const emitente = {
+      cnpj: normStr(emit.CNPJ || emit.CPF),
+      xNome: normStr(emit.xNome),
+      enderEmit: normalizeAddress(emit.enderEmit)
+    };
+    const destinatario = {
+      cnpj: normStr(dest.CNPJ || dest.CPF),
+      xNome: normStr(dest.xNome),
+      enderDest: normalizeAddress(dest.enderDest)
+    };
+    const transporte = {
+      modFrete: normStr(transp.modFrete),
+      transportadora: first(transp.transporta) || null,
+      volumes: {
+        qVol: normStr(vol?.qVol || (volList.length ? volList.reduce((acc, v) => acc + (parseInt(first(v.qVol)) || 0), 0) : '1')) || '1',
+        esp: normStr(vol?.esp),
+        pesoL: normStr(vol?.pesoL || '0'),
+        pesoB: normStr(vol?.pesoB || '0')
+      }
+    };
+    return {
+      chNFe,
+      nfNumber: normStr(ide.nNF),
+      serie: normStr(ide.serie),
+      dhEmi: normStr(ide.dhEmi || ide.dEmi),
+      emitente,
+      destinatario,
+      valores: { vNF: normStr(total.vNF || '0'), vProd: normStr(total.vProd || '0') },
+      transporte
+    };
+  } catch (error) {
+    throw new Error(`Erro ao extrair dados do XML: ${error.message}`);
+  }
+}
+
+app.post('/api/sefaz/upload-form', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), uploadSefaz.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    }
+
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const mime = req.file.mimetype;
+
+    let sefazData;
+
+    if (ext === '.xml' || mime === 'text/xml' || mime === 'application/xml') {
+      const xmlContent = fs.readFileSync(req.file.path, 'utf8');
+      const parser = new xml2js.Parser({ explicitArray: false, tagNameProcessors: [xml2js.processors.stripPrefix] });
+      const xmlData = await parser.parseStringPromise(xmlContent);
+      sefazData = extractSefazData(xmlData);
+    } else if (ext === '.pdf' || mime === 'application/pdf') {
+      const buffer = fs.readFileSync(req.file.path);
+      const result = await pdfParse(buffer);
+      sefazData = extractSefazDataFromText(result.text || '');
+    } else if (ext === '.docx') {
+      const { value: text } = await mammoth.extractRawText({ path: req.file.path });
+      sefazData = extractSefazDataFromText(text);
+    } else {
+      throw new Error('Tipo de arquivo não suportado');
+    }
+
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    const form = {
+      nf_number: sefazData.nfNumber,
+      serie: sefazData.serie,
+      emission_date: sefazData.dhEmi,
+      client_name: sefazData.destinatario.xNome,
+      client_cnpj: sefazData.destinatario.cnpj,
+      delivery_address: `${sefazData.destinatario.enderDest.xLgr || ''}, ${sefazData.destinatario.enderDest.nro || ''} - ${sefazData.destinatario.enderDest.xBairro || ''}, ${sefazData.destinatario.enderDest.xMun || ''} - ${sefazData.destinatario.enderDest.UF || ''}, ${sefazData.destinatario.enderDest.CEP || ''}`,
+      delivery_volume: sefazData.transporte.volumes.qVol,
+      merchandise_value: sefazData.valores.vNF,
+    };
+
+    res.json({
+      success: true,
+      message: 'Dados extraídos e formulário preenchido',
+      formData: form,
+      rawData: sefazData
+    });
+
+  } catch (error) {
+    console.error('Erro:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/sefaz/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), uploadSefaz.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    }
+
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    const mime = req.file.mimetype;
+
+    let sefazData;
+
+    if (ext === '.xml' || mime === 'text/xml' || mime === 'application/xml') {
+      const xmlContent = fs.readFileSync(req.file.path, 'utf8');
+      const parser = new xml2js.Parser({
+        explicitArray: false,
+        tagNameProcessors: [xml2js.processors.stripPrefix]
+      });
+      const xmlData = await parser.parseStringPromise(xmlContent);
+      sefazData = extractSefazData(xmlData);
+    } else if (ext === '.pdf' || mime === 'application/pdf') {
+      const buffer = fs.readFileSync(req.file.path);
+      const result = await pdfParse(buffer);
+      const text = result.text || '';
+      if (!text.trim()) throw new Error('Não foi possível extrair texto do PDF. O arquivo pode ser um scan.');
+      sefazData = extractSefazDataFromText(text);
+    } else if (ext === '.docx' || mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      const { value: text } = await mammoth.extractRawText({ path: req.file.path });
+      if (!text || !text.trim()) throw new Error('Não foi possível extrair texto do DOCX.');
+      sefazData = extractSefazDataFromText(text);
+    } else {
+      throw new Error('Tipo de arquivo não suportado. Envie XML, PDF ou DOCX.');
+    }
+
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Arquivo SEFAZ processado com sucesso',
+      data: sefazData
+    });
+
+  } catch (error) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+
+    console.error('Erro ao processar arquivo SEFAZ:', error);
+    return res.status(400).json({
+      error: 'Erro ao processar arquivo SEFAZ',
+      details: error.message
+    });
+  }
+});
+
+// services/deliveries-routes-service/index.js
+// ...
+
+app.post('/api/deliveries/create-from-sefaz', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  try {
+    console.log('[Routes] create-from-sefaz payload:', req.body);
+    await ensureInvoiceTablesPromise;
+
+    const { structured, summary, isSefazValid } = normalizeDeliveryPayload(req.body || {});
+
+    const nfNumber = normalizeNumericString(summary?.nf_number || structured.nf_data?.numero);
+    const clientName = (summary?.client_name || structured.destinatario?.razao_social || structured.remetente?.razao_social || '').trim();
+    const resolvedAddress = summary?.delivery_address || structured.destinatario?.endereco || buildAddress(structured.destinatario);
+    const clientAddress = resolvedAddress ? resolvedAddress.trim() : '';
+    const merchandiseValueParsed = parseDecimal(summary?.merchandise_value || structured.valores?.valor_total_nota);
+    const deliveryVolumeParsed = parseInteger(summary?.volume || structured.volumes?.quantidade);
+    
+    // CORREÇÃO: Garante que clientCnpj seja sempre uma string ou nulo
+    const clientCnpj = normalizeNumericString(summary?.client_cnpj || structured.destinatario?.cnpj_cpf) || null;
+
+    const missingFields = [];
+    if (!nfNumber) missingFields.push('nf_number');
+    if (!clientName) missingFields.push('client_name');
+    if (!clientAddress) missingFields.push('client_address');
+
+    if (missingFields.length) {
+      console.error('[Validation] Missing fields:', missingFields);
+      return res.status(400).json({
+        error: 'Campos obrigatórios ausentes para criar a entrega',
+        missingFields
+      });
+    }
+
+    const [existingDelivery] = await pool.execute(
+      'SELECT id FROM delivery_notes WHERE nf_number = ? AND company_id = ?',
+      [nfNumber, req.user.company_id]
+    );
+
+    if (existingDelivery.length > 0) {
+      return res.status(400).json({ error: 'Já existe uma entrega cadastrada com esta nota fiscal' });
+    }
+
+    const emissionDate = normalizeDate(structured.nf_data?.data_emissao || summary?.issue_date) || new Date().toISOString().split('T')[0];
+    const status = mapStatus(structured.status || 'PENDENTE');
+
+    const transportePayload = {
+      transportadora: structured.transportadora,
+      volumes: structured.volumes,
+      status
+    };
+
+    const [result] = await pool.execute(
+      `INSERT INTO delivery_notes (
+        nf_number, serie, emission_date, client_name_extracted, client_cnpj,
+        delivery_address, delivery_volume, merchandise_value, status,
+        driver_id, company_id, created_at, emitente_data, destinatario_data,
+        transporte_data
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?)`, [
+        nfNumber ?? null,
+        structured.nf_data?.serie ?? null,
+        emissionDate ?? null,
+        clientName ?? null,
+        clientCnpj ?? null, // <-- O valor agora é seguro
+        clientAddress ?? null,
+        deliveryVolumeParsed ?? 0,
+        merchandiseValueParsed ?? 0,
+        status ?? null,
+        req.user.id ?? null,
+        req.user.company_id ?? null,
+        toJsonOrNull(structured.remetente),
+        toJsonOrNull(structured.destinatario),
+        toJsonOrNull(transportePayload)
+      ]);
+
+    const deliveryId = result.insertId;
+
+    await pool.execute(
+      `INSERT INTO delivery_invoice_details (
+        delivery_note_id,
+        nf_data,
+        remetente,
+        destinatario,
+        valores,
+        transportadora,
+        volumes,
+        impostos,
+        informacoes_complementares,
+        raw_text,
+        raw_fields,
+        document_ai_confidence,
+        document_ai_entities,
+        metadata,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+        deliveryId,
+        toJsonOrNull(structured.nf_data),
+        toJsonOrNull(structured.remetente),
+        toJsonOrNull(structured.destinatario),
+        toJsonOrNull(structured.valores),
+        toJsonOrNull(structured.transportadora),
+        toJsonOrNull(structured.volumes),
+        toJsonOrNull(structured.impostos),
+        structured.informacoes_complementares ?? null,
+        structured.raw_text ?? null,
+        toJsonOrNull(structured.raw_fields),
+        structured.document_ai_confidence ?? null,
+        toJsonOrNull(structured.document_ai_entities),
+        toJsonOrNull({ isSefazValid }),
+        status ?? null
+      ]);
+
+    if (Array.isArray(structured.duplicatas) && structured.duplicatas.length) {
+      const insertInstallment =
+        `INSERT INTO delivery_invoice_installments (
+          delivery_note_id,
+          position,
+          installment_number,
+          amount,
+          due_date,
+          raw_data
+        ) VALUES (?, ?, ?, ?, ?, ?)`;
+
+      for (const [index, dup] of structured.duplicatas.entries()) {
+        const numero = normalizeNumericString(dup.numero || dup.numero_duplicata || dup.id || dup.identificador) || `PARCELA-${index + 1}`;
+        const amount = parseDecimal(dup.valor || dup.amount || dup.valor_total || dup.total);
+        const dueDate = normalizeDate(dup.data_vencimento || dup.due_date || dup.vencimento || dup.due);
+
+        await pool.execute(insertInstallment, [
+          deliveryId,
+          index + 1,
+          numero ?? null,
+          amount ?? null,
+          dueDate ?? null,
+          toJsonOrNull(dup)
+        ]);
+      }
+    }
+
+    if (Array.isArray(structured.itens_de_linha) && structured.itens_de_linha.length) {
+      const insertItem =
+        `INSERT INTO delivery_invoice_items (
+          delivery_note_id,
+          position,
+          product_code,
+          description,
+          quantity,
+          unit,
+          unit_price,
+          total_price,
+          ncm,
+          cfop,
+          raw_data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+      for (const [index, item] of structured.itens_de_linha.entries()) {
+        const normalizedItem = typeof item === 'string' ? { description: item } : (item || {});
+        const productCode = normalizeNumericString(normalizedItem.codigo_prod || normalizedItem.product_code || normalizedItem.codigo || normalizedItem.code);
+        const description = (normalizedItem.descricao || normalizedItem.description || normalizedItem.nome || '').trim() || null;
+        const quantity = parseDecimal(normalizedItem.quantidade || normalizedItem.quantity);
+        const unit = normalizeNumericString(normalizedItem.unidade || normalizedItem.unit);
+        const unitPrice = parseDecimal(normalizedItem.valor_unitario || normalizedItem.unit_price);
+        const totalPrice = parseDecimal(normalizedItem.valor_total || normalizedItem.total_price || normalizedItem.amount);
+        const ncm = normalizeNumericString(normalizedItem.ncm);
+        const cfop = normalizeNumericString(normalizedItem.cfop);
+
+        await pool.execute(insertItem, [
+          deliveryId,
+          index + 1,
+          productCode ?? null,
+          description ?? null,
+          quantity ?? null,
+          unit ?? null,
+          unitPrice ?? null,
+          totalPrice ?? null,
+          ncm ?? null,
+          cfop ?? null,
+          toJsonOrNull(item)
+        ]).catch((err) => {
+          console.error('Erro ao salvar item de nota fiscal:', err);
+        });
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Entrega criada com sucesso a partir dos dados SEFAZ',
+      data: {
+        id: deliveryId,
+        nf_number: nfNumber,
+        client_name: clientName,
+        client_address: clientAddress,
+        merchandise_value: merchandiseValueParsed ?? 0,
+        status,
+        summary,
+        structured,
+        isSefazValid: Boolean(isSefazValid)
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao criar entrega a partir de dados SEFAZ:', error);
+    res.status(500).json({
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
+  }
+});
+app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload_multer.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Arquivo não fornecido' });
+    }
+
+    const file = req.file;
+    console.log('🔍 Processando arquivo com Document AI:', file.originalname);
+
+    const uploadResult = await uploadToGCS(file, 'documentai');
+
+    if (!documentAIClient || !OCR_CONFIG.documentAIProjectId || !OCR_CONFIG.documentAILocation || !OCR_CONFIG.documentAIProcessorId) {
+        throw new Error('Configuração do Document AI incompleta. Verifique as variáveis de ambiente.');
+    }
+
+    const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+
+    const request = {
+      name: processorName,
+      rawDocument: {
+        content: file.buffer.toString('base64'),
+        mimeType: file.mimetype
+      }
+    };
+
+    const [result] = await documentAIClient.processDocument(request);
+    const { document } = result;
+
+    const extractedData = extractDocumentAIData(document);
+
+    res.json({
+      success: true,
+      data: {
+        extractedData,
+        rawText: document.text,
+        entities: document.entities || [],
+        confidence: calculateConfidence(document),
+        uploadUrl: uploadResult ? uploadResult.publicUrl : null
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erro ao processar com Document AI:', error);
+    res.status(500).json({
+      error: 'Erro ao processar documento',
+      details: error.message
+    });
+  }
+});
+
+function extractDocumentAIData(document) {
+  const extractedData = {
+    nfNumber: '',
+    clientName: '',
+    clientCnpj: '',
+    deliveryAddress: '',
+    merchandiseValue: '',
+    volume: '1',
+    weight: '',
+    issueDate: '',
+    dueDate: '',
+    observations: '',
+    nfeKey: ''
+  };
+
+  if (!document.entities) {
+    return extractedData;
+  }
+
+  const entityMappings = {
+    'invoice_id': 'nfNumber',
+    'invoice_number': 'nfNumber',
+    'customer_name': 'clientName',
+    'recipient_name': 'clientName',
+    'supplier_name': 'clientName',
+    'customer_id': 'clientCnpj',
+    'tax_id': 'clientCnpj',
+    'recipient_tax_id': 'clientCnpj',
+    'delivery_address': 'deliveryAddress',
+    'address': 'deliveryAddress',
+    'recipient_address': 'deliveryAddress',
+    'total_amount': 'merchandiseValue',
+    'net_amount': 'merchandiseValue',
+    'invoice_date': 'issueDate',
+    'due_date': 'dueDate',
+    'quantity': 'volume'
+  };
+
+  document.entities.forEach(entity => {
+    if (entity.type && entity.mentionText) {
+      const fieldName = entityMappings[entity.type.toLowerCase()];
+      if (fieldName && extractedData[fieldName] === '') {
+        let value = entity.mentionText.trim();
+
+        switch (fieldName) {
+          case 'merchandiseValue':
+            value = value.replace(/[^\d.,]/g, '');
+            if (value.includes(',')) {
+              value = value.replace(/\./g, '').replace(',', '.');
+            }
+            break;
+          case 'issueDate':
+          case 'dueDate':
+            try {
+              const date = new Date(value);
+              if (!isNaN(date.getTime())) {
+                value = date.toISOString().split('T')[0];
+              }
+            } catch (e) {
+            }
+            break;
+          case 'clientCnpj':
+            value = value.replace(/[^\d]/g, '');
+            break;
+        }
+
+        extractedData[fieldName] = value;
+      }
+    }
+  });
+
+  if (extractedData.issueDate && !extractedData.dueDate) {
+    try {
+      const issueDate = new Date(extractedData.issueDate);
+      issueDate.setDate(issueDate.getDate() + 30);
+      extractedData.dueDate = issueDate.toISOString().split('T')[0];
+    } catch (e) {
+    }
+  }
+
+  extractedData.observations = 'Dados extraídos automaticamente via Document AI';
+
+  return extractedData;
+}
+
+function calculateConfidence(document) {
+  if (!document.entities || document.entities.length === 0) {
+    return 0;
+  }
+
+  const confidences = document.entities
+    .map(entity => entity.confidence || 0)
+    .filter(conf => conf > 0);
+
+  if (confidences.length === 0) {
+    return 0;
+  }
+
+  return confidences.reduce((sum, conf) => sum + conf, 0) / confidences.length;
+}
+
+app.post('/api/deliveries/:id/occurrence', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload_multer.single('photo'), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+    const { type, description, latitude, longitude } = req.body;
+    const photo = req.file;
+
+    const [deliveryRows] = await pool.query(
+      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [deliveryId, req.user.company_id]
+    );
+
+    if (deliveryRows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    const [result] = await pool.query(`
+      INSERT INTO delivery_occurrences (delivery_id, company_id, driver_id, type, description, photo_url, latitude, longitude, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      deliveryId,
+      req.user.company_id,
+      req.user.id,
+      type,
+      description,
+      photo ? photo.path : null,
+      latitude || null,
+      longitude || null,
+      req.user.id
+    ]);
+
+    const occurrenceId = result.insertId;
+
+    if (type === 'recusa') {
+      await pool.query(
+        'UPDATE delivery_notes SET status = ? WHERE id = ?',
+        ['REFUSED', deliveryId]
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        id: occurrenceId,
+        delivery_id: deliveryId,
+        type,
+        description,
+        photo_url: photo ? `/api/occurrences/${occurrenceId}/photo` : null,
+        created_at: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao registrar ocorrência:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/occurrences', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const { type, start_date, end_date, driver_id } = req.query;
+
+    let query = `
+      SELECT
+        o.*,
+        d.nf_number,
+        d.client_name_extracted as client_name,
+        d.client_address,
+        u.full_name as driver_name,
+        u2.full_name as created_by_name
+      FROM delivery_occurrences o
+      LEFT JOIN delivery_notes d ON o.delivery_id = d.id
+      LEFT JOIN users u ON o.driver_id = u.id
+      LEFT JOIN users u2 ON o.created_by = u2.id
+      WHERE o.company_id = ?
+    `;
+    const params = [req.user.company_id];
+
+    if (type) {
+      query += ' AND o.type = ?';
+      params.push(type);
+    }
+
+    if (start_date) {
+      query += ' AND DATE(o.created_at) >= ?';
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      query += ' AND DATE(o.created_at) <= ?';
+      params.push(end_date);
+    }
+
+    if (driver_id) {
+      query += ' AND o.driver_id = ?';
+      params.push(driver_id);
+    }
+
+    query += ' ORDER BY o.created_at DESC';
+
+    const [rows] = await pool.query(query, params);
+
+    res.json({
+      success: true,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar ocorrências:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const occurrenceId = req.params.id;
+
+    const [rows] = await pool.query(`
+      SELECT
+        o.*,
+        d.nf_number,
+        d.client_name_extracted as client_name,
+        d.client_address,
+        u.full_name as driver_name,
+        u2.full_name as created_by_name
+      FROM delivery_occurrences o
+      LEFT JOIN delivery_notes d ON o.delivery_id = d.id
+      LEFT JOIN users u ON o.driver_id = u.id
+      LEFT JOIN users u2 ON o.created_by = u2.id
+      WHERE o.id = ? AND o.company_id = ?
+    `, [occurrenceId, req.user.company_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
+    }
+
+    const delivery = rows[0];
+
+    res.json({
+      success: true,
+      data: delivery
+    });
+
+  } catch (error) {
+    console.error('Erro ao obter ocorrência:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/occurrences/:id/photo', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const occurrenceId = req.params.id;
+
+    const [rows] = await pool.query(
+      'SELECT photo_url FROM delivery_occurrences WHERE id = ? AND company_id = ?',
+      [occurrenceId, req.user.company_id]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
+    }
+
+    const occurrence = rows[0];
+
+    if (!occurrence.photo_url) {
+      return res.status(404).json({ error: 'Foto não encontrada' });
+    }
+
+    if (!fs.existsSync(occurrence.photo_url)) {
+      return res.status(404).json({ error: 'Arquivo não encontrado' });
+    }
+
+    res.sendFile(path.resolve(occurrence.photo_url));
+
+  } catch (error) {
+    console.error('Erro ao obter foto:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const { status, client_id, start_date, end_date } = req.query; // Pega os novos filtros
+    const user = req.user;
+    
+    let query = `
+      SELECT 
+        d.*,
+        u.full_name as driver_name,
+        c.name as client_name,
+        c.address as client_address
+      FROM delivery_notes d
+      LEFT JOIN users u ON d.driver_id = u.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      WHERE d.company_id = ?
+    `;
+    const params = [user.company_id];
+
+    if (user.user_type === 'DRIVER') {
+      query += ' AND d.driver_id = ?';
+      params.push(user.id);
+    } else {
+      if (req.query.driver_id) {
+        query += ' AND d.driver_id = ?';
+        params.push(req.query.driver_id);
+      }
+    }
+
+    if (status) {
+      query += ' AND d.status = ?';
+      params.push(status);
+    }
+
+    if (client_id) {
+      query += ' AND d.client_id = ?';
+      params.push(client_id);
+    }
+    
+    // CORRIGIDO: Agora usa os filtros de data enviados pelo frontend
+    if (start_date && end_date) {
+      query += ' AND DATE(d.created_at) >= ? AND DATE(d.created_at) <= ?';
+      params.push(start_date, end_date);
+    } else {
+      // Se não houver filtros, assume que é hoje
+      query += ' AND DATE(d.created_at) = CURDATE()';
+    }
+
+    query += ' ORDER BY d.created_at ASC';
+
+    const [rows] = await pool.query(query, params);
+
+    res.json({
+      success: true,
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Erro ao listar entregas:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+
+    const [rows] = await pool.query(`
+      SELECT
+        d.*,
+        u.full_name as driver_name,
+        c.name as client_name,
+        c.address as client_address,
+        c.phone as client_phone
+      FROM delivery_notes d
+      LEFT JOIN users u ON d.driver_id = u.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      WHERE d.id = ? AND d.company_id = ?
+    `, [deliveryId, req.user.company_id]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    const [occurrences] = await pool.query(
+      'SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY created_at DESC',
+      [deliveryId]
+    );
+
+    const delivery = rows[0];
+    delivery.occurrences = occurrences;
+
+    res.json({
+      success: true,
+      data: delivery
+    });
+
+  } catch (error) {
+    console.error('Erro ao obter entrega:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+    const { status, notes } = req.body;
+
+    const [deliveryRows] = await pool.query(
+      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [deliveryId, req.user.company_id]
+    );
+
+    if (deliveryRows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    await pool.query(
+      'UPDATE delivery_notes SET status = ?, notes = ?, updated_at = NOW() WHERE id = ?',
+      [status, notes, deliveryId]
+    );
+
+    res.json({
+      success: true,
+      message: 'Status atualizado com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao atualizar status:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+if (require.main === module) {
+  app.listen(3003, () => console.log('Deliveries & Routes Service rodando na porta 3003'));
+}
+
+module.exports = app;

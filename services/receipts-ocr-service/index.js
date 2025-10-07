@@ -1,13 +1,153 @@
-const express = require('express');
-const multer = require('multer');
+﻿﻿﻿﻿
+const dotenv = require('dotenv');
 const path = require('path');
 const fs = require('fs');
+const envCandidates = [
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(__dirname, '.env')
+];
+
+let envLoaded = false;
+envCandidates.forEach((envPath) => {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, override: true });
+    envLoaded = true;
+  }
+});
+
+if (!envLoaded) {
+  dotenv.config({ override: true });
+}
+
+const express = require('express');
+const multer = require('multer');
 const { createWorker } = require('tesseract.js');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
+
+const vision = require('@google-cloud/vision');
+const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
+const { Storage } = require('@google-cloud/storage');
+
+// Centralizar a inicialização dos clientes do Google Cloud
+const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+let visionClient = null;
+let documentAIClient = null;
+let storage = null;
+let bucket = null;
+
+if (hasGoogleCredentials) {
+  try {
+    const resolveCredentialsPath = () => {
+      const credentialEnv = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      if (!credentialEnv) return null;
+
+      if (path.isAbsolute(credentialEnv)) {
+        return fs.existsSync(credentialEnv) ? credentialEnv : null;
+      }
+
+      const backendRoot = path.resolve(__dirname, '..', '..');
+      const resolved = path.resolve(backendRoot, credentialEnv.replace(/^\.\/?/, ''));
+      return fs.existsSync(resolved) ? resolved : null;
+    };
+
+    const keyFilename = resolveCredentialsPath();
+
+    if (keyFilename) {
+      visionClient = new vision.ImageAnnotatorClient({ keyFilename });
+      documentAIClient = new DocumentProcessorServiceClient({ keyFilename });
+      storage = new Storage({ keyFilename });
+
+      const bucketName = process.env.GCLOUD_BUCKET || process.env.GCS_BUCKET;
+      if (bucketName) {
+        bucket = storage.bucket(bucketName);
+        console.log('✅ [Receipts] Google Cloud Storage configurado com sucesso.');
+      } else {
+        console.warn('⚠️ [Receipts] GCS_BUCKET_NAME não definido. Uploads serão locais.');
+      }
+    } else {
+      throw new Error('Caminho das credenciais do Google não encontrado.');
+    }
+  } catch (error) {
+    console.warn('⚠️ Erro ao configurar Google Cloud Services no Receipts Service:', error.message);
+    console.warn('⚠️ Usando armazenamento local como fallback.');
+    hasGoogleCredentials = false; // Força o fallback
+  }
+} else {
+  console.warn('⚠️ [Receipts] Google Cloud Storage não configurado. Usando armazenamento local.');
+}
+
+
+// ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes de OCR
+const OCR_CONFIG = {
+  defaultEngine: process.env.OCR_DEFAULT_ENGINE || 'vision',
+  enableDocumentAI: process.env.OCR_ENABLE_DOCUMENT_AI === 'true',
+  documentAIProcessorId: process.env.DOCUMENT_AI_PROCESSOR_ID || 'processor-id',
+  documentAILocation: process.env.DOCUMENT_AI_LOCATION || 'us',
+  documentAIProjectId: process.env.DOCUMENT_AI_PROJECT_ID || process.env.GCLOUD_PROJECT_ID
+};
+
+console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â ConfiguraÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes de OCR e Storage carregadas:', {
+  defaultEngine: OCR_CONFIG.defaultEngine,
+  enableDocumentAI: OCR_CONFIG.enableDocumentAI,
+  documentAILocation: OCR_CONFIG.documentAILocation,
+  googleCredentialsPath: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+  gcloudProjectId: process.env.GCLOUD_PROJECT_ID,
+  gcloudBucket: process.env.GCLOUD_BUCKET
+});
+
+
+
+// FunÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para enviar arquivo ao Google Cloud Storage
+async function uploadToGCS(file, folder = 'receipts') {
+  // Se o bucket nÃ£o estiver configurado ou nÃ£o houver credenciais, salva localmente
+  if (!bucket || !hasGoogleCredentials) {
+    console.warn(`[Receipts] GCS nÃ£o configurado. Salvando arquivo localmente na pasta '${folder}'.`);
+    // Usa o diretÃ³rio do serviÃ§o de entregas para centralizar os uploads
+    const uploadDir = path.resolve(__dirname, `../deliveries-routes-service/uploads/${folder}`);
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '.jpg')}`;
+    const filePath = path.join(uploadDir, uniqueName);
+    fs.writeFileSync(filePath, file.buffer);
+    // A URL deve ser relativa Ã  porta 3003, que Ã© onde a pasta estÃ¡ exposta
+    const localUrl = `http://localhost:3003/uploads/${folder}/${uniqueName}`;
+    return { publicUrl: localUrl, gcsPath: filePath };
+  }
+
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+
+    const uniqueName = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+    const blob = bucket.file(uniqueName);
+    const blobStream = blob.createWriteStream({
+      resumable: false,
+      contentType: file.mimetype
+    });
+
+    blobStream.on('error', err => {
+      console.error('Falha ao enviar arquivo ao GCS (uniform bucket):', {
+        code: err.code,
+        message: err.message,
+        reason: err.errors && err.errors[0] ? err.errors[0].reason : undefined,
+      });
+      reject(err);
+    });
+    blobStream.on('finish', async () => {
+      // CORREÇÃO: Não torna o arquivo público. Em vez disso, cria uma URL que aponta para o nosso próprio backend.
+      // O próprio serviço de canhotos (porta 3004) será responsável por servir a imagem.
+      const backendUrl = `http://localhost:3004/api/receipts/view?path=${encodeURIComponent(blob.name)}`;
+      console.log(`[GCS] Arquivo salvo. URL de acesso via backend: ${backendUrl}`);
+      resolve({ publicUrl: backendUrl, gcsPath: blob.name });
+    });
+
+    blobStream.end(file.buffer);
+  });
+}
 
 const swaggerDefinition = {
   openapi: '3.0.0',
@@ -27,45 +167,53 @@ const swaggerSpec = swaggerJsdoc(options);
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
+// CORREÇÃO: Configuração de CORS mais robusta para aceitar as origens do frontend.
+const allowedOrigins = ['http://localhost:8080', 'http://localhost:5173', 'http://localhost:8081', 'http://127.0.0.1:8080', 'http://127.0.0.1:8081'];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Configurar multer para upload de arquivos
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads');
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
+// Configurar multer para upload de arquivos (usando memoryStorage para GCS)
 const upload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|pdf/;
+    const allowedTypes = /jpeg|jpg|png|pdf|doc|docx/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
+    const mimetype = allowedTypes.test(file.mimetype) || 
+                    file.mimetype === 'application/msword' || 
+                    file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     
     if (mimetype && extname) {
       return cb(null, true);
     } else {
-      cb(new Error('Apenas arquivos JPG, PNG e PDF são permitidos'));
+      cb(new Error('Apenas arquivos JPG, PNG, PDF e Word (DOC, DOCX) sÃƒÆ’Ã‚Â£o permitidos'));
     }
   }
 });
 
-// Middleware de autenticação
+// FunÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para garantir que temos um diretÃƒÆ’Ã‚Â³rio local para arquivos temporÃƒÆ’Ã‚Â¡rios
+const ensureLocalDir = () => {
+  const uploadDir = path.join(__dirname, 'temp');
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+  return uploadDir;
+};
+
+// Middleware de autenticaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
 function authorize(roles = []) {
   return (req, res, next) => {
     const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
+    if (!auth) return res.status(401).json({ error: 'Token nÃƒÆ’Ã‚Â£o fornecido' });
     const token = auth.split(' ')[1];
     try {
       const decoded = jwt.verify(token, "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a");
@@ -75,10 +223,61 @@ function authorize(roles = []) {
       req.user = decoded;
       next();
     } catch (err) {
-      res.status(401).json({ error: 'Token inválido' });
+      res.status(401).json({ error: 'Token invÃƒÆ’Ã‚Â¡lido' });
     }
   };
 }
+
+async function serveReceiptFile(req, res, rawParam) {
+  try {
+    let gcsPath = rawParam;
+    if (typeof gcsPath === 'string' && gcsPath.length > 0) {
+      try {
+        gcsPath = decodeURIComponent(gcsPath);
+      } catch (decodeError) {
+        console.warn('Nao foi possivel decodificar o caminho do recibo, usando valor bruto.', decodeError.message);
+      }
+    }
+
+    if (!gcsPath) {
+      return res.status(400).send('Caminho do arquivo nao informado.');
+    }
+
+    if (!bucket || !hasGoogleCredentials) {
+      const localPath = gcsPath;
+      if (fs.existsSync(localPath)) {
+        return res.sendFile(localPath);
+      }
+      return res.status(404).send('Arquivo local nao encontrado.');
+    }
+
+    const file = bucket.file(gcsPath);
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      return res.status(404).send('Arquivo nao encontrado no Google Cloud Storage.');
+    }
+
+    file.createReadStream()
+      .on('error', (err) => {
+        console.error('Erro ao fazer stream do arquivo GCS:', err);
+        res.status(500).send('Erro ao ler o arquivo.');
+      })
+      .pipe(res);
+  } catch (error) {
+    console.error('Erro ao servir arquivo do GCS:', error);
+    res.status(500).send('Erro interno do servidor.');
+  }
+}
+
+app.get('/api/receipts/view', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  const rawParam = typeof req.query?.path === 'string' ? req.query.path : null;
+  await serveReceiptFile(req, res, rawParam);
+});
+app.get(/^\/api\/receipts\/view\/(.+)$/, authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  const legacyParam = req.params[0] || null;
+  await serveReceiptFile(req, res, legacyParam);
+});
 
 /**
  * @swagger
@@ -116,28 +315,45 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
     const file = req.file;
 
     if (!file) {
-      return res.status(400).json({ error: 'Arquivo não fornecido' });
+      return res.status(400).json({ error: 'Arquivo nÃƒÆ’Ã‚Â£o fornecido' });
     }
 
     if (!delivery_id || !driver_id) {
-      return res.status(400).json({ error: 'delivery_id/deliveryId e driver_id/driverId são obrigatórios' });
+      return res.status(400).json({ error: 'delivery_id/deliveryId e driver_id/driverId sÃƒÆ’Ã‚Â£o obrigatÃƒÆ’Ã‚Â³rios' });
     }
 
     // Verificar se a entrega existe e pertence ao motorista
     const [deliveryRows] = await pool.query(
-      'SELECT * FROM delivery_notes WHERE id = ? AND driver_id = ? AND company_id = ?',
-      [delivery_id, driver_id, req.user.company_id]
-    );
+      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [delivery_id, req.user.company_id]);
 
     if (deliveryRows.length === 0) {
-      return res.status(404).json({ error: 'Entrega não encontrada' });
+      return res.status(404).json({ error: 'Entrega nÃo encontrada' });
     }
 
-    // Inserir registro do canhoto
-    const [result] = await pool.query(`
-      INSERT INTO delivery_receipts (delivery_note_id, captured_by_user_id, company_id, image_url, photo_datetime)
-      VALUES (?, ?, ?, ?, NOW())
-    `, [delivery_id, driver_id, req.user.company_id, file.path]);
+    // Upload para o Google Cloud Storage
+    const uploadResult = await uploadToGCS(file, 'receipts');
+    
+    if (!uploadResult || !uploadResult.publicUrl) {
+      return res.status(500).json({ error: 'Falha ao fazer upload do arquivo para o Cloud Storage' });
+    }
+    
+    // CORREÇÃO: Usa INSERT ... ON DUPLICATE KEY UPDATE para evitar o erro de entrada duplicada.
+    // Se um canhoto para a entrega já existe, ele atualiza a imagem e reseta o status.
+    // Se não existe, ele insere um novo.
+    const sql = `
+      INSERT INTO delivery_receipts
+        (delivery_note_id, driver_id, company_id, image_url, gcs_path, photo_datetime, status, notes)
+      VALUES
+        (?, ?, ?, ?, ?, NOW(), 'PENDING', ?)
+      ON DUPLICATE KEY UPDATE
+        image_url = VALUES(image_url),
+        gcs_path = VALUES(gcs_path), 
+        driver_id = VALUES(driver_id),
+        photo_datetime = NOW(),
+        status = 'PENDING',
+        notes = VALUES(notes)`;
+    const [result] = await pool.query(sql, [delivery_id, driver_id, req.user.company_id, uploadResult.publicUrl, uploadResult.gcsPath, notes]);
 
     const receiptId = result.insertId;
 
@@ -146,7 +362,8 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
       data: {
         id: receiptId,
         filename: file.originalname,
-        url: `/api/receipts/${receiptId}/download`,
+        url: uploadResult.publicUrl,
+        gcs_path: uploadResult.gcsPath,
         processed: false,
         status: 'PENDING'
       }
@@ -175,44 +392,192 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
  *       200:
  *         description: OCR processado com sucesso
  */
-app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('file'), async (req, res) => {
   try {
     const receiptId = req.params.id;
+    const { engine = 'vision' } = req.query; 
+    // engine pode ser "vision", "tesseract" ou "documentai"
 
-    // Buscar informações do canhoto
+    // Buscar informaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes do canhoto
     const [receiptRows] = await pool.query(
       'SELECT * FROM delivery_receipts WHERE id = ? AND company_id = ?',
-      [receiptId, req.user.company_id]
-    );
+      [receiptId, req.user.company_id])
 
     if (receiptRows.length === 0) {
       return res.status(404).json({ error: 'Canhoto não encontrado' });
     }
 
     const receipt = receiptRows[0];
+    let fileContent;
+    let fileExt;
 
-    // Verificar se o arquivo existe
-    if (!fs.existsSync(receipt.file_path)) {
-      return res.status(404).json({ error: 'Arquivo não encontrado' });
+    // Se um novo arquivo foi enviado, faz upload para o GCS
+    if (req.file) {
+      const uploadResult = await uploadToGCS(req.file, 'receipts');
+      
+      if (!uploadResult || !uploadResult.publicUrl) {
+        return res.status(500).json({ error: 'Falha ao fazer upload do arquivo para o Cloud Storage' });
+      }
+      
+      // Atualiza o registro com a nova URL do GCS
+      await pool.query(
+        'UPDATE delivery_receipts SET image_url = ?, gcs_path = ? WHERE id = ?',
+        [uploadResult.publicUrl, uploadResult.gcsPath, receiptId])
+      
+      receipt.image_url = uploadResult.publicUrl;
+      receipt.gcs_path = uploadResult.gcsPath;
+      
+      // Usa o buffer do arquivo enviado diretamente
+      fileContent = req.file.buffer;
+      fileExt = path.extname(req.file.originalname).toLowerCase();
+    } else {
+      // Verifica se o arquivo estÃƒÆ’Ã‚Â¡ no GCS ou localmente
+      if (receipt.gcs_path) {
+        // Baixa o arquivo do GCS para processamento
+        console.log(' Baixando arquivo do Google Cloud Storage:', receipt.gcs_path);
+        try {
+          const tempDir = ensureLocalDir();
+          const tempFilePath = path.join(tempDir, path.basename(receipt.gcs_path));
+          
+          // Baixa o arquivo do GCS
+          await bucket.file(receipt.gcs_path).download({ destination: tempFilePath });
+          fileContent = fs.readFileSync(tempFilePath);
+          fileExt = path.extname(receipt.gcs_path).toLowerCase();
+          
+          // Remove o arquivo temporÃƒÆ’Ã‚Â¡rio apÃƒÆ’Ã‚Â³s uso
+          fs.unlinkSync(tempFilePath);
+        } catch (downloadError) {
+          console.error(' Erro ao baixar arquivo do GCS:', downloadError);
+          return res.status(404).json({ error: 'Não foi possível acessar o arquivo no Cloud Storage' });
+        }
+      } else if (fs.existsSync(receipt.image_url)) {
+        // Arquivo local (compatibilidade com versÃƒÆ’Ã‚Â£o anterior)
+        fileContent = fs.readFileSync(receipt.image_url);
+        fileExt = path.extname(receipt.image_url).toLowerCase();
+      } else {
+        return res.status(404).json({ error: 'Arquivo não encontrado' });
+      }
     }
 
-    // Processar OCR
-    const worker = await createWorker('por');
-    const { data: { text } } = await worker.recognize(receipt.file_path);
-    await worker.terminate();
+    let text = '';
+    
+    // Processamento baseado no tipo de arquivo
+    if (fileExt === '.doc' || fileExt === '.docx' || fileExt === '.pdf') {
+      console.log(` Processando documento ${fileExt} usando Google Cloud Document AI`);
+      try {
+        // Usando Document Text Detection para documentos
+        const [result] = await visionClient.documentTextDetection({
+          image: { content: fileContent },
+          imageContext: {
+            languageHints: ['pt-BR', 'pt', 'en']
+          }
+        });
+        
+        text = result.fullTextAnnotation ? result.fullTextAnnotation.text : '';
+        console.log(` Documento processado com sucesso. Texto extraido: ${text.substring(0, 100)}...`);
+      } catch (docError) {
+        console.error('ÃƒÂ¢Ã‚ÂÃ…â€™ Erro ao processar documento:', docError);
+        return res.status(400).json({ error: `Não foi possível processar o documento ${fileExt}` });
+      }
+    } else if (engine === 'tesseract') {
+      try {
+        const tempDir = ensureLocalDir();
+        const tempFilePath = path.join(tempDir, `temp-${Date.now()}${fileExt}`);
+        fs.writeFileSync(tempFilePath, fileContent);
+        
+        const { createWorker } = require('tesseract.js');
+        const worker = await createWorker('por');
+        const result = await worker.recognize(tempFilePath);
+        text = result.data.text;
+        await worker.terminate();
+        
+        // Remove o arquivo temporÃƒÆ’Ã‚Â¡rio
+        fs.unlinkSync(tempFilePath);
+      } catch (tessError) {
+        console.error(' Erro ao processar com Tesseract:', tessError);
+        return res.status(400).json({ error: 'não foi possível processar o arquivo com Tesseract' });
+      }
+    } else if (engine === 'documentai') {
+      console.log(` Processando documento usando Google Document AI`);
+      try {
+        // Formatar o nome do processador
+        const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+        
+        const request = {
+          name: processorName,
+          rawDocument: {
+            content: fileContent.toString('base64'),
+            mimeType: fileExt === '.pdf' ? 'application/pdf' : 
+                      (fileExt === '.doc' || fileExt === '.docx') ? 'application/msword' : 
+                      'image/jpeg'
+          }
+        };
+        
+        // Processar o documento
+        const [result] = await documentAIClient.processDocument(request);
+        const { document } = result;
+        
+        // Extrair o texto do documento
+        text = document.text;
+        
+        // Extrair dados estruturados 
+        const entities = {};
+        if (document.entities && document.entities.length > 0) {
+          document.entities.forEach(entity => {
+            if (entity.type && entity.mentionText) {
+              entities[entity.type] = entity.mentionText;
+            }
+          });
+        }
+        
+        console.log(` Documento processado com Document AI. Texto extraido: ${text.substring(0, 100)}...`);
+        console.log('Entidades extraidas:', entities);
+        
+        // Adicionar entidades ao resultado
+        req.documentAIEntities = entities;
+        
+      } catch (docAIError) {
+        console.error(' Erro ao processar com Document AI:', docAIError);
+        return res.status(400).json({ error: 'não foi possível processar o arquivo com Document AI' });
+      }
+    } else {
+      // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ OCR com Google Vision para imagens
+      console.log(` Processando imagem usando Google Cloud Vision API`);
+      try {
+        // Usando Text Detection otimizado para imagens de recibos
+        const [result] = await visionClient.textDetection({
+          image: { content: fileContent },
+          imageContext: {
+            languageHints: ['pt-BR', 'pt', 'en']
+          }
+        });
+        
+        const detections = result.textAnnotations;
+        text = detections.length > 0 ? detections[0].description : '';
+        console.log(` Imagem processada com sucesso. Texto extraidos: ${text.substring(0, 100)}...`);
+      } catch (imgError) {
+        console.error(' Erro ao processar imagem:', imgError);
+        return res.status(400).json({ error: 'não foi possível processar a imagem' });
+      }
+    }
 
-    // Extrair dados estruturados do texto
-    const ocrData = extractStructuredData(text);
+    if (!text) {
+      return res.status(400).json({ error: 'Nenhum texto detectado no canhoto' });
+    }
+
+    // Extrair dados estruturados do texto usando Google Cloud Vision
+    console.log(' Extraindo dados estruturados do texto OCR');
+    const ocrData = await extractStructuredData(text, fileExt, req.documentAIEntities);
 
     // Atualizar status do canhoto
     await pool.query(
       'UPDATE delivery_receipts SET ocr_data = ?, status = ?, processed_at = NOW() WHERE id = ?',
-      [JSON.stringify(ocrData), 'PROCESSED', receiptId]
-    );
+      [JSON.stringify(ocrData), 'PROCESSED', receiptId])
 
     res.json({
       success: true,
       data: {
+        engine_used: engine,
         ocr_data: ocrData,
         raw_text: text
       }
@@ -220,6 +585,437 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
 
   } catch (error) {
     console.error('Erro no processamento OCR:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Adicione esta funÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o no seu arquivo de servidor (receipts/index.js)
+
+/**
+ * @swagger
+ * /api/receipts/process-documentai:
+ *   post:
+ *     summary: Processar documento com Document AI e retornar dados estruturados
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: Documento processado com sucesso
+ */
+app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Arquivo nÃƒÆ’Ã‚Â£o fornecido' });
+    }
+
+    const file = req.file;
+    console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Processando arquivo com Document AI:', file.originalname);
+
+    // Upload para GCS se necessÃƒÆ’Ã‚Â¡rio
+    const uploadResult = await uploadToGCS(file, 'documentai');
+    
+    // Processar com Document AI
+    const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+    
+    const request = {
+      name: processorName,
+      rawDocument: {
+        content: file.buffer.toString('base64'),
+        mimeType: file.mimetype
+      }
+    };
+
+    const [result] = await documentAIClient.processDocument(request);
+    const { document } = result;
+
+    // Extrair dados estruturados
+    const { extractedData, rawFields } = extractDocumentAIData(document);
+
+    // Retornar dados estruturados no formato esperado pelo frontend
+    res.json({
+      success: true,
+      data: {
+        extractedData,
+        rawText: document.text,
+        entities: document.entities || [],
+        confidence: calculateConfidence(document),
+        uploadUrl: uploadResult ? uploadResult.publicUrl : null,
+        rawFields
+      }
+    });
+
+  } catch (error) {
+    console.error(' Erro ao processar com Document AI:', error);
+    res.status(500).json({ 
+      error: 'Erro ao processar documento',
+      details: error.message 
+    });
+  }
+});
+
+// FunÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para extrair dados estruturados do Document AI
+
+function extractDocumentAIData(document) {
+  const labelStore = new Map();
+
+  const normalizeString = (value) => {
+    if (typeof value === 'string') {
+      return value.trim();
+    }
+    if (typeof value === 'number') {
+      return value.toString();
+    }
+    if (value && typeof value === 'object') {
+      if (value.text) {
+        return String(value.text).trim();
+      }
+      if (value.content) {
+        return String(value.content).trim();
+      }
+    }
+    return '';
+  };
+
+  const recordLabel = (label, value) => {
+    const normalizedLabel = normalizeString(label).toLowerCase();
+    const normalizedValue = normalizeString(value);
+    if (!normalizedLabel || !normalizedValue) {
+      return;
+    }
+    if (!labelStore.has(normalizedLabel)) {
+      labelStore.set(normalizedLabel, []);
+    }
+    const bucket = labelStore.get(normalizedLabel);
+    if (!bucket.includes(normalizedValue)) {
+      bucket.push(normalizedValue);
+    }
+  };
+
+  const normalizeCurrency = (value) => {
+    const text = normalizeString(value);
+    if (!text) return '';
+    const moneyMatch = text.match(/[-\d.,]+/g);
+    let cleaned = moneyMatch ? moneyMatch.join('') : text;
+    if (cleaned.includes(',')) {
+      const parts = cleaned.split(',');
+      const decimal = parts.pop();
+      cleaned = parts.join('').replace(/\./g, '') + '.' + decimal;
+    } else {
+      cleaned = cleaned.replace(/[^\d.-]/g, '');
+    }
+    const parsed = parseFloat(cleaned);
+    if (!Number.isFinite(parsed)) {
+      return '';
+    }
+    return parsed.toFixed(2);
+  };
+
+  const normalizeTaxId = (value) => {
+    const digits = normalizeString(value).replace(/\D/g, '');
+    if (digits.length === 14) {
+      return digits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+    }
+    if (digits.length === 11) {
+      return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
+    }
+    return digits || '';
+  };
+
+  const normalizeDate = (value) => {
+    if (!value) return '';
+    if (typeof value === 'object' && value.year) {
+      const year = value.year;
+      const month = String(value.month || 1).padStart(2, '0');
+      const day = String(value.day || 1).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    const text = normalizeString(value);
+    if (!text) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      return text;
+    }
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(text)) {
+      const [day, month, year] = text.split('/');
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    const parsed = new Date(text.replace(/\s+/, ' ').replace(/\s*(?:UTC|GMT).*/, ''));
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toISOString().split('T')[0];
+    }
+    return '';
+  };
+
+  const getEntityValue = (entity) => {
+    if (!entity) return '';
+    if (entity.normalizedValue) {
+      const { normalizedValue } = entity;
+      if (normalizedValue.text) {
+        return normalizedValue.text;
+      }
+      if (normalizedValue.moneyValue) {
+        const units = Number(normalizedValue.moneyValue.units || 0);
+        const nanos = Number(normalizedValue.moneyValue.nanos || 0) / 1e9;
+        const total = units + nanos;
+        return total ? total.toString() : '';
+      }
+      if (normalizedValue.dateValue) {
+        return normalizeDate(normalizedValue.dateValue);
+      }
+    }
+    if (entity.mentionText) {
+      return entity.mentionText.trim();
+    }
+    if (entity.value) {
+      return normalizeString(entity.value);
+    }
+    if (entity.textAnchor && document && document.text) {
+      const segments = entity.textAnchor.textSegments || [];
+      if (segments.length > 0) {
+        const start = Number(segments[0].startIndex || 0);
+        const end = Number(segments[0].endIndex || 0);
+        if (!Number.isNaN(start) && !Number.isNaN(end) && end > start) {
+          return document.text.substring(start, end).trim();
+        }
+      }
+    }
+    return '';
+  };
+
+  const processEntity = (entity, parentLabel = '') => {
+    if (!entity) return;
+
+    const labels = new Set();
+    if (entity.type) {
+      labels.add(entity.type.toLowerCase());
+    }
+    if (entity.fieldName && entity.fieldName.text) {
+      const fieldLabel = entity.fieldName.text.toLowerCase();
+      labels.add(fieldLabel);
+      if (parentLabel) {
+        labels.add(`${parentLabel}/${fieldLabel}`);
+      }
+    } else if (parentLabel) {
+      labels.add(parentLabel);
+    }
+
+    const value = getEntityValue(entity);
+    labels.forEach((label) => recordLabel(label, value));
+
+    const nextParent = entity.type ? entity.type.toLowerCase() : parentLabel;
+    if (Array.isArray(entity.properties)) {
+      entity.properties.forEach((child) => {
+        processEntity(child, nextParent);
+      });
+    }
+  };
+
+  if (Array.isArray(document?.entities)) {
+    document.entities.forEach((entity) => processEntity(entity));
+  }
+
+  if (Array.isArray(document?.summaryFields)) {
+    document.summaryFields.forEach((field) => {
+      const label = field.type || (field.fieldName && field.fieldName.text) || '';
+      const value = field.value || field.valueText || field; 
+      recordLabel(label, getEntityValue({ value }));
+    });
+  }
+
+  const takeFirst = (labels, formatter = normalizeString) => {
+    for (const label of labels) {
+      const bucket = labelStore.get(label);
+      if (bucket && bucket.length) {
+        const formatted = formatter(bucket[0]);
+        if (formatted) {
+          return formatted;
+        }
+      }
+    }
+    return '';
+  };
+
+  const takeFromAll = (labels, formatter = normalizeString) => {
+    for (const label of labels) {
+      const bucket = labelStore.get(label);
+      if (bucket) {
+        for (const entry of bucket) {
+          const formatted = formatter(entry);
+          if (formatted) {
+            return formatted;
+          }
+        }
+      }
+    }
+    return '';
+  };
+
+  const takeDate = (labels) => {
+    const candidates = [];
+    labels.forEach((label) => {
+      const bucket = labelStore.get(label);
+      if (bucket) {
+        bucket.forEach((value) => {
+          const normalized = normalizeDate(value);
+          if (normalized) {
+            candidates.push(normalized);
+          }
+        });
+      }
+    });
+    if (!candidates.length) return '';
+    candidates.sort();
+    return candidates[0];
+  };
+
+  const takeCurrency = (labels) => takeFromAll(labels, normalizeCurrency);
+  const takeTaxId = (labels) => takeFromAll(labels, normalizeTaxId);
+
+  const takeNumber = (labels) => {
+    return takeFromAll(labels, (value) => {
+      const text = normalizeString(value);
+      const match = text.replace(',', '.').match(/-?\d+(?:\.\d+)?/);
+      return match ? match[0] : '';
+    });
+  };
+
+  const joinAddress = (labels) => {
+    const parts = [];
+    labels.forEach((label) => {
+      const bucket = labelStore.get(label);
+      if (bucket) {
+        bucket.forEach((value) => {
+          const normalized = normalizeString(value);
+          if (normalized && !parts.includes(normalized)) {
+            parts.push(normalized);
+          }
+        });
+      }
+    });
+    return parts.join(', ');
+  };
+
+  const sanitizeNfNumber = (value) => {
+    const digits = normalizeString(value).replace(/\D/g, '');
+    return digits || '';
+  };
+
+  const extractedData = {
+    nfNumber: sanitizeNfNumber(takeFromAll(['nro', 'invoice_number', 'invoice_id', 'chave', 'chave_de_acesso', 'document_number'])),
+    clientName: takeFirst(['receiver_name', 'ship_to_name', 'remit_to_name', 'customer_name', 'destinatario_nome'], normalizeString) || takeFirst(['supplier_name'], normalizeString),
+    clientCnpj: takeTaxId(['receiver_tax_id', 'customer_tax_id', 'customer_id', 'tax_id', 'recipient_tax_id']) || takeTaxId(['supplier_tax_id']),
+    deliveryAddress: joinAddress(['receiver_address', 'ship_to_address', 'remit_to_address']) || joinAddress(['supplier_address']),
+    merchandiseValue: takeCurrency(['total_amount', 'net_amount', 'amount_due', 'invoice_total', 'valor_total', 'grand_total', 'valor_total_nota']),
+    volume: takeNumber(['volume', 'volumes', 'line_item/quantity', 'total_volume']) || '1',
+    weight: takeNumber(['weight', 'total_weight', 'gross_weight', 'peso', 'peso_bruto', 'peso_liquido']),
+    issueDate: takeDate(['issue_date', 'invoice_date', 'data_emissao', 'emission_date']),
+    dueDate: takeDate(['due_date', 'payment_due_date', 'data_vencimento']),
+    observations: '',
+    nfeKey: sanitizeNfNumber(takeFromAll(['nfe_key', 'access_key', 'invoice_access_key', 'chave_nfe', 'chave_da_nfe', 'chave_de_acesso', 'chave'])),
+    lineItems: []
+  };
+
+  if (document?.text) {
+    const preview = document.text.substring(0, 180).replace(/\s+/g, ' ').trim();
+    extractedData.observations = `Dados extraÃƒÆ’Ã‚Â­dos automaticamente via Document AI. Texto completo: ${preview}...`;
+  }
+
+  if (extractedData.issueDate && !extractedData.dueDate) {
+    const issue = new Date(extractedData.issueDate);
+    if (!isNaN(issue.getTime())) {
+      issue.setDate(issue.getDate() + 30);
+      extractedData.dueDate = issue.toISOString().split('T')[0];
+    }
+  }
+
+  return {
+    extractedData,
+    rawFields: Object.fromEntries(Array.from(labelStore.entries()).map(([key, value]) => [key, value.slice(0, 10)]))
+  };
+}
+function calculateConfidence(document) {
+  if (!document.entities || document.entities.length === 0) {
+    return 0;
+  }
+
+  const confidences = document.entities
+    .map(entity => entity.confidence || 0)
+    .filter(conf => conf > 0);
+
+  if (confidences.length === 0) {
+    return 0;
+  }
+
+  return confidences.reduce((sum, conf) => sum + conf, 0) / confidences.length;
+}
+
+/**
+ * @swagger
+ * /api/delivery/{id}:
+ *   get:
+ *     summary: Obter dados de uma entrega
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID da entrega
+ *     responses:
+ *       200:
+ *         description: Dados da entrega
+ */
+app.get('/api/delivery/:id', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+
+    // Buscar a entrega no banco
+    const [rows] = await pool.query(
+      `SELECT d.*, r.id as receipt_id, r.image_url, r.ocr_data, r.validated
+       FROM delivery_notes d
+       LEFT JOIN delivery_receipts r ON r.delivery_note_id = d.id
+       WHERE d.id = ? AND d.company_id = ?`,
+      [deliveryId, req.user.company_id])
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    const delivery = rows[0];
+
+    // Retornar dados da entrega + OCR (se existir)
+    res.json({
+      id: delivery.id,
+      nfNumber: delivery.nf_number,
+      clientName: delivery.client_name_extracted,
+      clientCnpj: delivery.client_cnpj,
+      deliveryAddress: delivery.delivery_address,
+      merchandiseValue: delivery.value,
+      volume: delivery.volume,
+      weight: delivery.weight,
+      issueDate: delivery.issue_date,
+      dueDate: delivery.due_date,
+      observations: delivery.notes,
+      receipt: delivery.receipt_id ? {
+        id: delivery.receipt_id,
+        imageUrl: delivery.image_url,
+        ocrData: delivery.ocr_data ? JSON.parse(delivery.ocr_data) : null,
+        validated: delivery.validated
+      } : null
+    });
+  } catch (error) {
+    console.error('Erro ao buscar entrega:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -262,8 +1058,7 @@ app.put('/api/receipts/:id/validate', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
     // Verificar se o canhoto existe
     const [receiptRows] = await pool.query(
       'SELECT * FROM delivery_receipts WHERE id = ? AND company_id = ?',
-      [receiptId, req.user.company_id]
-    );
+      [receiptId, req.user.company_id])
 
     if (receiptRows.length === 0) {
       return res.status(404).json({ error: 'Canhoto não encontrado' });
@@ -272,8 +1067,7 @@ app.put('/api/receipts/:id/validate', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
     // Atualizar dados validados
     await pool.query(
       'UPDATE delivery_receipts SET validated_ocr_data = ?, corrections = ?, validated = ?, validated_at = NOW() WHERE id = ?',
-      [JSON.stringify(ocr_data), JSON.stringify(corrections), validated, receiptId]
-    );
+      [JSON.stringify(ocr_data), JSON.stringify(corrections), validated, receiptId])
 
     res.json({
       success: true,
@@ -301,21 +1095,21 @@ app.get('/api/receipts', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (re
   try {
     const { delivery_id, driver_id, status } = req.query;
     let query = `
-      SELECT r.*, d.nf_number, d.client_name, u.full_name as driver_name
+      SELECT r.*, d.nf_number, d.client_name_extracted as client_name, u.full_name as driver_name
       FROM delivery_receipts r
-      LEFT JOIN delivery_notes d ON r.delivery_id = d.id
-      LEFT JOIN users u ON r.driver_id = u.id
+      LEFT JOIN delivery_notes d ON r.delivery_note_id = d.id
+      LEFT JOIN users u ON r.captured_by_user_id = u.id
       WHERE r.company_id = ?
     `;
     const params = [req.user.company_id];
 
     if (delivery_id) {
-      query += ' AND r.delivery_id = ?';
+      query += ' AND r.delivery_note_id = ?';
       params.push(delivery_id);
     }
 
     if (driver_id) {
-      query += ' AND r.driver_id = ?';
+      query += ' AND r.captured_by_user_id = ?';
       params.push(driver_id);
     }
 
@@ -339,43 +1133,173 @@ app.get('/api/receipts', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (re
   }
 });
 
-// Função para extrair dados estruturados do texto OCR
-function extractStructuredData(text) {
+// FunÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o para extrair dados estruturados do texto OCR com suporte a diferentes formatos de documento
+async function extractStructuredData(text, fileExt = '', documentAIEntities = null) {
+  console.log(` Extraindo dados estruturados do texto OCR (formato: ${fileExt || 'imagem'})`);
+  
   const data = {
     nf_number: '',
     client_name: '',
     address: '',
     value: 0,
-    items: []
+    items: [],
+    document_type: fileExt ? fileExt.toLowerCase().replace('.', '') : 'imagem'
   };
 
-  // Extrair número da NF
-  const nfMatch = text.match(/NF[:\s]*(\d+)/i);
-  if (nfMatch) {
-    data.nf_number = nfMatch[1];
+  // Se temos entidades do Document AI, usamos elas prioritariamente
+  if (documentAIEntities && Object.keys(documentAIEntities).length > 0) {
+    console.log(' Usando entidades extraidas pelo Document AI');
+    
+    // Mapeamento de tipos de entidades do Document AI para nossos campos
+    if (documentAIEntities['invoice_id'] || documentAIEntities['invoice_number']) {
+      data.nf_number = documentAIEntities['invoice_id'] || documentAIEntities['invoice_number'];
+    }
+    
+    if (documentAIEntities['customer_name'] || documentAIEntities['recipient']) {
+      data.client_name = documentAIEntities['customer_name'] || documentAIEntities['recipient'];
+    }
+    
+    if (documentAIEntities['address'] || documentAIEntities['delivery_address']) {
+      data.address = documentAIEntities['address'] || documentAIEntities['delivery_address'];
+    }
+    
+    if (documentAIEntities['total_amount'] || documentAIEntities['amount_due']) {
+      const valueStr = documentAIEntities['total_amount'] || documentAIEntities['amount_due'];
+      data.value = parseFloat(valueStr.replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
+    }
+    
+    // Adicionar itens se disponÃƒÆ’Ã‚Â­veis
+    if (documentAIEntities['line_items'] && Array.isArray(documentAIEntities['line_items'])) {
+      data.items = documentAIEntities['line_items'];
+    }
+    
+    return data;
   }
+
+  const normalizedText = text
+    .replace(/\s+/g, ' ')
+    .replace(/\n+/g, '\n')
+    .trim();
+
+  // ExpressÃƒÆ’Ã‚Âµes regulares melhoradas para diferentes formatos de documento
+  const regexPatterns = {
+    // PadrÃƒÆ’Ã‚Âµes para nÃƒÆ’Ã‚Âºmero da NF
+    nf: [
+      /NF[e\-]?[:\s]*(\d+)/i,
+      /N[oÃƒâ€šÃ‚Âº][:\s]*(\d+)/i,
+      /Nota\s*Fiscal[:\s]*(\d+)/i,
+      /NÃƒÆ’Ã‚Âºmero[:\s]*(\d+)/i,
+      /\b(\d{6,9})\b/  // NÃƒÆ’Ã‚Âºmeros longos isolados que podem ser NF
+    ],
+    // PadrÃƒÆ’Ã‚Âµes para valor total
+    value: [
+      /total[:\s]*R?\$?\s*([\d.,]+)/i,
+      /valor[:\s]*R?\$?\s*([\d.,]+)/i,
+      /R\$\s*([\d.,]+)/i
+    ],
+    // PadrÃƒÆ’Ã‚Âµes para nome do cliente
+    client: [
+      /cliente[:\s]*([^\n\r]{3,50})/i,
+      /destinat[]rio[:\s]*([^\n\r]{3,50})/i,
+      /nome[:\s]*([^\n\r]{3,50})/i,
+      /raz[o\s*social[:\s]*([^\n\r]{3,50})/i
+    ],
+    // PadrÃƒÆ’Ã‚Âµes para endereÃƒÆ’Ã‚Â§o
+    address: [
+      /endere[ÃƒÆ’Ã‚Â§c]o[:\s]*([^\n\r]{5,100})/i,
+      /logradouro[:\s]*([^\n\r]{5,100})/i,
+      /rua[:\s]*([^\n\r]{5,100})/i,
+      /av[\.]?[:\s]*([^\n\r]{5,100})/i
+    ],
+    // PadrÃƒÆ’Ã‚Âµes para CNPJ/CPF
+    document: [
+      /(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/,  // CNPJ formatado
+      /(\d{14})/,  // CNPJ sem formataÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
+      /(\d{3}\.\d{3}\.\d{3}-\d{2})/,  // CPF formatado
+      /(\d{11})/   // CPF sem formataÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o
+    ]
+  };
+
+  const extractWithPatterns = (patterns, text) => {
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+    return '';
+  };
+
+  data.nf_number = extractWithPatterns(regexPatterns.nf, normalizedText);
 
   // Extrair valor total
-  const valueMatch = text.match(/total[:\s]*R?\$?\s*([\d,]+\.?\d*)/i);
-  if (valueMatch) {
-    data.value = parseFloat(valueMatch[1].replace(',', '.'));
+  const valueStr = extractWithPatterns(regexPatterns.value, normalizedText);
+  if (valueStr) {
+    // Normalizar formato numÃƒÆ’Ã‚Â©rico
+    const normalizedValue = valueStr
+      .replace(/[^\d,.]/g, '')
+      .replace(',', '.');
+    data.value = parseFloat(normalizedValue) || 0;
   }
 
-  // Extrair nome do cliente (simplificado)
-  const lines = text.split('\n');
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    const line = lines[i].trim();
-    if (line.length > 3 && !line.match(/^\d/) && !line.match(/total/i)) {
-      data.client_name = line;
-      break;
+  // Extrair nome do cliente
+  data.client_name = extractWithPatterns(regexPatterns.client, normalizedText);
+
+  if (!data.client_name) {
+    const lines = text.split('\n');
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+      const line = lines[i].trim();
+      if (line.length > 5 && !line.match(/^\d/) && !line.match(/total|valor|nota|fiscal|nf[e\-]?|cnpj|cpf/i)) {
+        data.client_name = line;
+        break;
+      }
     }
   }
 
+  // Extrair endereÃƒÆ’Ã‚Â§o
+  data.address = extractWithPatterns(regexPatterns.address, normalizedText);
+
+  // Processamento especÃƒÆ’Ã‚Â­fico para documentos Word
+  if (fileExt && ['.doc', '.docx'].includes(fileExt.toLowerCase())) {
+    // Documentos Word geralmente tÃƒÆ’Ã‚Âªm formataÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Â£o mais estruturada
+    // Podemos tentar extrair informaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes de tabelas ou seÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes especÃƒÆ’Ã‚Â­ficas
+    const paragraphs = text.split('\n\n');
+    
+    // Procurar por parÃƒÆ’Ã‚Â¡grafos que possam conter informaÃƒÆ’Ã‚Â§ÃƒÆ’Ã‚Âµes de endereÃƒÆ’Ã‚Â§o
+    for (const para of paragraphs) {
+      if (para.match(/rua|avenida|av\.|logradouro|endere[ÃƒÆ’Ã‚Â§c]o/i) && !data.address) {
+        data.address = para.trim();
+      }
+    }
+  }
+
+  // Processamento especÃƒÆ’Ã‚Â­fico para PDFs
+  if (fileExt && ['.pdf'].includes(fileExt.toLowerCase())) {
+    // PDFs podem ter estrutura mais complexa
+    // Tentar identificar blocos de texto que possam ser itens
+    const blocks = text.split('\n\n');
+    const items = [];
+    
+    for (const block of blocks) {
+      if (block.match(/\d+\s*x\s*\d+/) || block.match(/R\$\s*[\d.,]+/)) {
+        items.push({
+          description: block.trim(),
+          extracted: true
+        });
+      }
+    }
+    
+    if (items.length > 0) {
+      data.items = items;
+    }
+  }
+
+  console.log(' Dados estruturados extraido:', data);
   return data;
 }
 
-if (require.main === module) {
-  app.listen(3004, () => console.log('Receipts OCR Service rodando na porta 3004'));
-}
+// CORREÇÃO: Usa a porta do .env ou a porta padrão 3004.
+const PORT = process.env.RECEIPTS_SERVICE_PORT || 3004;
+app.listen(PORT, () => console.log(`Receipts OCR Service rodando na porta ${PORT}`));
 
-module.exports = app; 
+module.exports = app;

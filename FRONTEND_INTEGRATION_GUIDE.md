@@ -1369,31 +1369,41 @@ export default {
   },
   
   async mounted() {
-    await this.initializeMap();
-    await this.loadDrivers();
-    this.startWebSocket();
-    this.startAutoRefresh();
+    this.initializeMap().then(() => {
+      this.loadDrivers();
+      this.startWebSocket();
+      this.startAutoRefresh();
+    });
   },
   
   methods: {
     async initializeMap() {
+      // Carregador da API do Google Maps
       this.mapLoader = new Loader({
-        apiKey: process.env.VUE_APP_GOOGLE_MAPS_API_KEY,
-        version: 'weekly'
+        apiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+        version: 'weekly',
+        libraries: ['maps', 'marker', 'visualization']
       });
       
-      const google = await this.mapLoader.load();
-      
-      this.map = new google.maps.Map(this.$refs.mapContainer, {
+      // Carrega as bibliotecas do Google Maps de forma assíncrona
+      const [{ Map }, { AdvancedMarkerElement }] = await Promise.all([
+        this.mapLoader.importLibrary('maps'),
+        this.mapLoader.importLibrary('marker'),
+      ]);
+
+      this.google = window.google; // A API do Google Maps fica disponível globalmente
+
+      this.map = new Map(this.$refs.mapContainer, {
         center: { lat: -23.5505, lng: -46.6333 },
         zoom: 12,
-        styles: this.getMapStyles()
+        styles: this.getMapStyles(),
+        mapId: 'YOUR_MAP_ID'
       });
     },
     
     async loadDrivers() {
       try {
-        const response = await this.$api.get('/tracking/drivers/current-locations');
+        const response = await this.$api.get('/api/tracking/drivers/current-locations');
         this.drivers = response.data.data;
         this.updateMarkers();
       } catch (error) {
@@ -1402,28 +1412,30 @@ export default {
     },
     
     updateMarkers() {
-      // Limpar marcadores antigos
       Object.values(this.markers).forEach(marker => {
         marker.setMap(null);
       });
       this.markers = {};
       
-      // Criar novos marcadores
       this.drivers.forEach(driver => {
         if (driver.latitude && driver.longitude) {
-          const marker = new google.maps.Marker({
+          const markerIcon = document.createElement('div');
+          markerIcon.className = 'driver-marker';
+          markerIcon.innerHTML = `<i class="material-icons">${this.getDriverIcon(driver.status)}</i>`;
+          markerIcon.style.backgroundColor = this.getStatusColor(driver.status);
+
+          const marker = new this.google.maps.marker.AdvancedMarkerElement({
             position: { lat: driver.latitude, lng: driver.longitude },
             map: this.map,
             title: driver.name,
-            icon: this.getDriverIcon(driver.status)
+            content: markerIcon
           });
           
-          // Info window
-          const infoWindow = new google.maps.InfoWindow({
+          const infoWindow = new this.google.maps.InfoWindow({
             content: this.createInfoWindowContent(driver)
           });
           
-          marker.addListener('click', () => {
+          marker.addListener('gmp-click', () => {
             infoWindow.open(this.map, marker);
           });
           
@@ -1434,30 +1446,20 @@ export default {
     
     getDriverIcon(status) {
       const icons = {
-        active: '🚗',
-        busy: '🚛',
-        inactive: '⏸️',
-        available: '✅'
+        'active': 'directions_car',
+        'busy': 'local_shipping',
+        'inactive': 'pause',
+        'available': 'check_circle'
       };
-      
-      return {
-        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(`
-          <svg width="40" height="40" viewBox="0 0 40 40">
-            <circle cx="20" cy="20" r="18" fill="${this.getStatusColor(status)}" stroke="white" stroke-width="2"/>
-            <text x="20" y="25" text-anchor="middle" fill="white" font-size="16">${icons[status] || '🚗'}</text>
-          </svg>
-        `)}`,
-        scaledSize: new google.maps.Size(40, 40),
-        anchor: new google.maps.Point(20, 20)
-      };
+      return icons[status] || 'directions_car';
     },
     
     getStatusColor(status) {
       const colors = {
-        active: '#28a745',
-        busy: '#ffc107',
-        inactive: '#6c757d',
-        available: '#17a2b8'
+        'active': '#28a745',
+        'busy': '#ffc107',
+        'inactive': '#6c757d',
+        'available': '#17a2b8'
       };
       return colors[status] || '#6c757d';
     },
@@ -1476,10 +1478,10 @@ export default {
     
     getStatusText(status) {
       const texts = {
-        active: 'Ativo',
-        busy: 'Ocupado',
-        inactive: 'Inativo',
-        available: 'Disponível'
+        'active': 'Ativo',
+        'busy': 'Ocupado',
+        'inactive': 'Inativo',
+        'available': 'Disponível'
       };
       return texts[status] || 'Desconhecido';
     },
@@ -1487,7 +1489,7 @@ export default {
     centerOnDrivers() {
       if (this.drivers.length === 0) return;
       
-      const bounds = new google.maps.LatLngBounds();
+      const bounds = new this.google.maps.LatLngBounds();
       this.drivers.forEach(driver => {
         if (driver.latitude && driver.longitude) {
           bounds.extend({ lat: driver.latitude, lng: driver.longitude });
@@ -1504,11 +1506,11 @@ export default {
         const heatmapData = this.drivers
           .filter(driver => driver.latitude && driver.longitude)
           .map(driver => ({
-            location: new google.maps.LatLng(driver.latitude, driver.longitude),
+            location: new this.google.maps.LatLng(driver.latitude, driver.longitude),
             weight: 1
           }));
         
-        this.heatmap = new google.maps.visualization.HeatmapLayer({
+        this.heatmap = new this.google.maps.visualization.HeatmapLayer({
           data: heatmapData,
           map: this.map,
           radius: 50
@@ -1529,7 +1531,7 @@ export default {
     },
     
     startWebSocket() {
-      this.ws = new WebSocket(process.env.VUE_APP_WS_URL);
+      this.ws = new WebSocket(import.meta.env.VITE_WS_URL);
       
       this.ws.onopen = () => {
         this.ws.send(JSON.stringify({
@@ -1599,6 +1601,20 @@ export default {
   height: 100%;
   width: 100%;
 }
+
+/* Estilo para o novo AdvancedMarkerElement */
+.driver-marker {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  border: 2px solid white;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+}
+
 
 .map-controls {
   position: absolute;
@@ -1805,15 +1821,16 @@ export default {
   methods: {
     async loadDashboardData() {
       try {
-        const [kpisResponse, updatesResponse, alertsResponse] = await Promise.all([
-          this.$api.get('/dashboard/kpis'),
-          this.$api.get('/dashboard/recent-updates'),
-          this.$api.get('/dashboard/alerts')
+        // O endpoint correto está no serviço de relatórios (porta 3006)
+        const [kpisResponse] = await Promise.all([
+          this.$api.get('http://localhost:3006/api/dashboard/kpis'),
+          // this.$api.get('/dashboard/recent-updates'), // Exemplo, se existir
+          // this.$api.get('/dashboard/alerts')          // Exemplo, se existir
         ]);
         
-        this.kpis = this.formatKPIs(kpisResponse.data.data);
-        this.recentUpdates = updatesResponse.data.data;
-        this.alerts = alertsResponse.data.data;
+        this.kpis = this.formatKPIs(kpisResponse.data.data); // A resposta agora é encapsulada em 'data'
+        // this.recentUpdates = updatesResponse.data.data;
+        // this.alerts = alertsResponse.data.data;
         
       } catch (error) {
         console.error('Erro ao carregar dashboard:', error);
@@ -1821,44 +1838,48 @@ export default {
     },
     
     formatKPIs(data) {
-      return [
+      // Adiciona os KPIs de entregas do dia para o supervisor
+      const supervisorKPIs = [
         {
-          key: 'today_deliveries',
-          label: 'Entregas Hoje',
-          value: data.today_deliveries.total,
-          icon: 'fas fa-truck',
-          color: '#007bff',
-          change: 12.5,
-          trend: 'up'
+          key: 'total_deliveries_today',
+          label: 'Total de Entregas (Hoje)',
+          value: data.today_deliveries?.total || 0,
+          icon: 'fas fa-box-open',
+          color: '#17a2b8',
+          change: data.today_deliveries?.trend || 0,
+          trend: (data.today_deliveries?.trend || 0) >= 0 ? 'up' : 'down'
+        },
+        {
+          key: 'completed_deliveries_today',
+          label: 'Entregas Concluídas (Hoje)',
+          value: data.today_deliveries?.completed || 0,
+          icon: 'fas fa-check-circle',
+          color: '#28a745',
+          change: data.today_deliveries?.completion_rate_trend || 0,
+          trend: (data.today_deliveries?.completion_rate_trend || 0) >= 0 ? 'up' : 'down'
         },
         {
           key: 'active_drivers',
           label: 'Motoristas Ativos',
           value: data.active_drivers,
           icon: 'fas fa-users',
-          color: '#28a745',
-          change: 5.2,
+          color: '#6f42c1',
+          change: 5.2, // Exemplo
           trend: 'up'
         },
         {
-          key: 'performance_score',
-          label: 'Performance',
-          value: data.performance_score + '%',
-          icon: 'fas fa-chart-line',
+          key: 'pending_occurrences',
+          label: 'Ocorrências Pendentes',
+          value: data.pending_occurrences,
+          icon: 'fas fa-exclamation-triangle',
           color: '#ffc107',
-          change: -2.1,
+          change: -10.0, // Exemplo
           trend: 'down'
-        },
-        {
-          key: 'revenue_today',
-          label: 'Receita Hoje',
-          value: 'R$ ' + data.revenue_today.toFixed(2),
-          icon: 'fas fa-dollar-sign',
-          color: '#dc3545',
-          change: 8.7,
-          trend: 'up'
         }
       ];
+
+      // Filtra para remover KPIs que não tenham valor (caso a API não retorne)
+      return supervisorKPIs.filter(kpi => kpi.value !== undefined);
     },
     
     initializeCharts() {

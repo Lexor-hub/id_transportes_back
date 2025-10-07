@@ -235,6 +235,23 @@ Este documento descreve todos os endpoints REST disponíveis nos microserviços 
 - **Descrição:** Status diário das entregas.
 - **Resposta 200:** Array de status com total
 
+### GET `/api/dashboard/kpis`
+- **Descrição:** Retorna os KPIs (Key Performance Indicators) para o dashboard principal.
+- **Headers:** `Authorization: Bearer <token>`
+- **Resposta 200:**
+  ```json
+  {
+    "success": true,
+    "data": {
+      "today_deliveries": {
+        "total": 50,
+        "completed": 35
+      },
+      "active_drivers": 8,
+      "pending_occurrences": 3
+    }
+  }
+  ```
 ---
 
 **Observações Gerais:**

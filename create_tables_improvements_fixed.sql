@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS delivery_occurrences (
   longitude DECIMAL(11, 8),
   created_by INT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  status ENUM('PENDING', 'RESOLVED', 'IN_ANALYSIS') DEFAULT 'PENDING',
   FOREIGN KEY (delivery_id) REFERENCES delivery_notes(id),
   FOREIGN KEY (company_id) REFERENCES companies(id),
   FOREIGN KEY (driver_id) REFERENCES users(id),

@@ -5,6 +5,8 @@ const app = express();
 app.use(express.json());
 const cors = require('cors');
 
+const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a';
+
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
@@ -40,7 +42,7 @@ function authorize(roles = []) {
     if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
     const token = auth.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, jwtSecret);
       if (roles.length && !roles.includes(decoded.user_type)) {
         return res.status(403).json({ error: 'Acesso negado' });
       }
@@ -52,18 +54,71 @@ function authorize(roles = []) {
   };
 }
 
-// Cadastro de motorista (ADMIN/SUPERVISOR)
-app.post('/api/drivers', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
-  const { user_id, cpf, phone_number, tech_knowledge } = req.body;
+// Cadastro de motorista (ADMIN/SUPERVISOR/MASTER)
+app.post('/api/drivers', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (req, res) => {
+  const { user_id, cpf, phone_number, tech_knowledge, is_outsourced, company_id: companyIdBody, companyId } = req.body;
   try {
-    // Validação de CPF único
-    const [exists] = await pool.query('SELECT id FROM drivers WHERE cpf = ?', [cpf]);
-    if (exists.length > 0) return res.status(400).json({ error: 'CPF já cadastrado' });
-    await pool.query(
-      'INSERT INTO drivers (user_id, cpf, phone_number, tech_knowledge) VALUES (?, ?, ?, ?)',
-      [user_id, cpf, phone_number, tech_knowledge]
+    if (!user_id || !cpf) {
+      return res.status(400).json({ error: 'user_id e cpf são obrigatórios' });
+    }
+
+    const requesterRole = req.user?.user_type;
+    const requesterCompanyId = req.user?.company_id ?? null;
+    const providedCompanyId = companyIdBody ?? companyId ?? null;
+
+    let targetCompanyId = requesterCompanyId;
+    if (requesterRole === 'MASTER' && providedCompanyId) {
+      targetCompanyId = providedCompanyId;
+    }
+
+    if (!targetCompanyId) {
+      return res.status(400).json({ error: 'company_id não informado' });
+    }
+
+    const companyIdNumber = Number(targetCompanyId);
+    if (!Number.isFinite(companyIdNumber)) {
+      return res.status(400).json({ error: 'company_id inválido' });
+    }
+
+    const [userRows] = await pool.query('SELECT id, company_id FROM users WHERE id = ? LIMIT 1', [user_id]);
+    if (userRows.length === 0) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    const userCompanyId = userRows[0].company_id;
+    if (userCompanyId && Number(userCompanyId) !== companyIdNumber && requesterRole !== 'MASTER') {
+      return res.status(403).json({ error: 'Usuário não pertence à empresa do solicitante' });
+    }
+
+    const [driverByUser] = await pool.query('SELECT id FROM drivers WHERE user_id = ?', [user_id]);
+    if (driverByUser.length > 0) {
+      return res.status(400).json({ error: 'Usuário já possui motorista cadastrado' });
+    }
+
+    const [driverByCpf] = await pool.query('SELECT id FROM drivers WHERE cpf = ?', [cpf]);
+    if (driverByCpf.length > 0) {
+      return res.status(400).json({ error: 'CPF já cadastrado' });
+    }
+
+    const normalizedIsOutsourced = typeof is_outsourced === 'boolean'
+      ? (is_outsourced ? 1 : 0)
+      : (is_outsourced === 0 || is_outsourced === 1 ? is_outsourced : 1);
+
+    const [result] = await pool.query(
+      'INSERT INTO drivers (user_id, company_id, cpf, phone_number, tech_knowledge, is_outsourced, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())',
+      [
+        user_id,
+        companyIdNumber,
+        cpf,
+        phone_number || null,
+        tech_knowledge || null,
+        normalizedIsOutsourced,
+        'active'
+      ]
     );
-    res.status(201).json({ message: 'Motorista cadastrado' });
+
+    const insertId = result && result.insertId ? result.insertId : null;
+    return res.status(201).json({ success: true, data: { id: insertId, user_id, company_id: companyIdNumber } });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

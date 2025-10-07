@@ -1,508 +1,506 @@
-const express = require('express');
+﻿const express = require('express');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const swaggerUi = require('swagger-ui-express');
-const swaggerJsdoc = require('swagger-jsdoc');
-
-const swaggerDefinition = {
-  openapi: '3.0.0',
-  info: {
-    title: 'API Reports Service',
-    version: '1.0.0',
-    description: 'API para relatórios avançados e dashboards'
-  }
-};
-
-const options = {
-  swaggerDefinition,
-  apis: ['./index.js'],
-};
-
-const swaggerSpec = swaggerJsdoc(options);
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.use(cors({ origin: '*' }));
+
+const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a';
 
 // Middleware de autenticação
 function authorize(roles = []) {
   return (req, res, next) => {
-    const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
-    const token = auth.split(' ')[1];
+    // Debugging: accept token via Authorization header or ?token query param (temporary)
+    console.log('[Reports] Authorization header:', req.headers.authorization);
+    console.log('[Reports] query.token:', req.query && req.query.token ? '<present>' : '<none>');
+    const token = req.headers.authorization?.split(' ')[1] || (req.query && req.query.token) || null;
+    if (!token) return res.status(401).json({ success: false, error: { message: 'Token não fornecido' } });
+
     try {
-      const decoded = jwt.verify(token, "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a");
+      const decoded = jwt.verify(token, jwtSecret);
       if (roles.length && !roles.includes(decoded.user_type)) {
-        return res.status(403).json({ error: 'Acesso negado' });
+        return res.status(403).json({ success: false, error: { message: 'Acesso negado' } });
       }
       req.user = decoded;
       next();
     } catch (err) {
-      res.status(401).json({ error: 'Token inválido' });
+      res.status(401).json({ success: false, error: { message: 'Token inválido' } });
     }
   };
 }
 
-/**
- * @swagger
- * /api/reports/deliveries:
- *   get:
- *     summary: Relatório de entregas
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: start_date
- *         schema:
- *           type: string
- *       - in: query
- *         name: end_date
- *         schema:
- *           type: string
- *       - in: query
- *         name: driver_id
- *         schema:
- *           type: string
- *       - in: query
- *         name: client_id
- *         schema:
- *           type: string
- *       - in: query
- *         name: status
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Relatório de entregas
- */
-app.get('/api/reports/deliveries', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
-  try {
-    const { start_date, end_date, driver_id, client_id, status } = req.query;
-    
-    let whereClause = 'WHERE d.company_id = ?';
-    const params = [req.user.company_id];
+const RECOVERABLE_SQL_ERRORS = new Set(['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE', 'ER_NO_SUCH_FIELD', 'ER_NO_SUCH_COLUMN']);
 
-    if (start_date) {
-      whereClause += ' AND DATE(d.created_at) >= ?';
-      params.push(start_date);
-    }
+const COMPLETED_STATUSES = ['DELIVERED', 'ENTREGUE', 'REALIZADA', 'REALIZADO', 'ENTREGADO'];
+const IN_PROGRESS_STATUSES = ['IN_TRANSIT', 'IN_PROGRESS', 'EN_ROUTE', 'EM_ANDAMENTO'];
+const PENDING_STATUSES = ['PENDING', 'PENDENTE'];
+const ADDITIONAL_OPEN_STATUSES = ['REATTEMPTED', 'PROBLEM'];
+const ROUTE_STARTED_STATUSES = ['IN_PROGRESS', 'COMPLETED', 'STARTED'];
 
-    if (end_date) {
-      whereClause += ' AND DATE(d.created_at) <= ?';
-      params.push(end_date);
-    }
+const COMPLETED_STATUSES_UPPER = COMPLETED_STATUSES.map((status) => status.toUpperCase());
+const IN_PROGRESS_STATUSES_UPPER = IN_PROGRESS_STATUSES.map((status) => status.toUpperCase());
+const PENDING_STATUSES_UPPER = PENDING_STATUSES.map((status) => status.toUpperCase());
+const OPEN_STATUSES_UPPER = Array.from(new Set([
+  ...IN_PROGRESS_STATUSES_UPPER,
+  ...PENDING_STATUSES_UPPER,
+  ...ADDITIONAL_OPEN_STATUSES.map((status) => status.toUpperCase()),
+]));
+const DRIVER_RELEVANT_STATUSES_UPPER = Array.from(new Set([...OPEN_STATUSES_UPPER, ...COMPLETED_STATUSES_UPPER]));
+const ROUTE_STARTED_STATUSES_UPPER = Array.from(new Set(ROUTE_STARTED_STATUSES.map((status) => status.toUpperCase())));
 
-    if (driver_id) {
-      whereClause += ' AND d.driver_id = ?';
-      params.push(driver_id);
-    }
+const buildPlaceholders = (values) => values.map(() => '?').join(', ');
 
-    if (client_id) {
-      whereClause += ' AND d.client_id = ?';
-      params.push(client_id);
-    }
+const completedPlaceholders = buildPlaceholders(COMPLETED_STATUSES_UPPER);
+const inProgressPlaceholders = buildPlaceholders(IN_PROGRESS_STATUSES_UPPER);
+const pendingPlaceholders = buildPlaceholders(PENDING_STATUSES_UPPER);
+const openPlaceholders = buildPlaceholders(OPEN_STATUSES_UPPER);
+const driverStatusesPlaceholders = buildPlaceholders(DRIVER_RELEVANT_STATUSES_UPPER);
+const routeStatusesPlaceholders = buildPlaceholders(ROUTE_STARTED_STATUSES_UPPER);
 
-    if (status) {
-      whereClause += ' AND d.status = ?';
-      params.push(status);
-    }
+// Literal lists for use inside SELECT expressions where binding placeholders
+// would complicate the expression. These are built from the static status arrays.
+const completedLiterals = COMPLETED_STATUSES_UPPER.map(s => `'${s}'`).join(', ');
+const pendingLiterals = PENDING_STATUSES_UPPER.map(s => `'${s}'`).join(', ');
+const inProgressLiterals = IN_PROGRESS_STATUSES_UPPER.map(s => `'${s}'`).join(', ');
 
-    // Resumo geral
-    const [summaryRows] = await pool.query(`
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status IN ('PENDING', 'IN_TRANSIT') THEN 1 ELSE 0 END) as pending,
-        SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END) as cancelled,
-        SUM(CASE WHEN status = 'REFUSED' THEN 1 ELSE 0 END) as refused,
-        AVG(CASE WHEN status = 'DELIVERED' THEN TIMESTAMPDIFF(MINUTE, created_at, updated_at) END) as avg_delivery_time
-      FROM delivery_notes d
-      ${whereClause}
-    `, params);
+const shouldFallback = (error) => {
+  if (!error) return false;
+  if (RECOVERABLE_SQL_ERRORS.has(error.code)) {
+    return true;
+  }
+  const message = typeof error.message === 'string' ? error.message : '';
+  return message.includes('Unknown column');
+};
 
-    // Progresso diário
-    const [dailyProgressRows] = await pool.query(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status IN ('PENDING', 'IN_TRANSIT') THEN 1 ELSE 0 END) as pending
-      FROM delivery_notes d
-      ${whereClause}
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-      LIMIT 30
-    `, params);
+const runWithFallbacks = async (queries) => {
+  let lastError = null;
+  for (const { sql, params } of queries) {
+    try {
+      // Debug: log SQL and params to help pinpoint syntax errors
+      console.log('\n--- Executing SQL ---');
+      console.log(sql);
+      console.log('params:', JSON.stringify(params));
+      console.log('--- end SQL ---\n');
 
-    // Distribuição por status
-    const [statusDistributionRows] = await pool.query(`
-      SELECT 
-        status,
-        COUNT(*) as count,
-        ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM delivery_notes d ${whereClause}), 2) as percentage
-      FROM delivery_notes d
-      ${whereClause}
-      GROUP BY status
-    `, params);
-
-    // Performance por motorista
-    const [driverPerformanceRows] = await pool.query(`
-      SELECT 
-        u.full_name as driver_name,
-        COUNT(*) as total_deliveries,
-        SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) as completed_deliveries,
-        ROUND(SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as success_rate,
-        AVG(CASE WHEN d.status = 'DELIVERED' THEN TIMESTAMPDIFF(MINUTE, d.created_at, d.updated_at) END) as avg_delivery_time
-      FROM delivery_notes d
-      LEFT JOIN users u ON d.driver_id = u.id
-      ${whereClause}
-      GROUP BY d.driver_id, u.full_name
-      ORDER BY success_rate DESC
-    `, params);
-
-    res.json({
-      success: true,
-      data: {
-        summary: summaryRows[0],
-        daily_progress: dailyProgressRows,
-        status_distribution: statusDistributionRows,
-        driver_performance: driverPerformanceRows
+      return await pool.query(sql, params);
+    } catch (error) {
+      lastError = error;
+      if (!shouldFallback(error)) {
+        throw error;
       }
-    });
-
-  } catch (error) {
-    console.error('Erro ao gerar relatório de entregas:', error);
-    res.status(500).json({ error: error.message });
+    }
   }
-});
-
-/**
- * @swagger
- * /api/reports/driver-performance:
- *   get:
- *     summary: Relatório de desempenho por motorista
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: start_date
- *         required: true
- *         schema:
- *           type: string
- *       - in: query
- *         name: end_date
- *         required: true
- *         schema:
- *           type: string
- *       - in: query
- *         name: driver_id
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Relatório de desempenho
- */
-app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
-  try {
-    const { start_date, end_date, driver_id } = req.query;
-    
-    if (!start_date || !end_date) {
-      return res.status(400).json({ error: 'start_date e end_date são obrigatórios' });
-    }
-
-    let whereClause = 'WHERE d.company_id = ? AND DATE(d.created_at) BETWEEN ? AND ?';
-    const params = [req.user.company_id, start_date, end_date];
-
-    if (driver_id) {
-      whereClause += ' AND d.driver_id = ?';
-      params.push(driver_id);
-    }
-
-    const [rows] = await pool.query(`
-      SELECT 
-        d.driver_id,
-        u.full_name as driver_name,
-        COUNT(*) as total_deliveries,
-        SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) as completed_deliveries,
-        ROUND(SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as success_rate,
-        AVG(CASE WHEN d.status = 'DELIVERED' THEN TIMESTAMPDIFF(MINUTE, d.created_at, d.updated_at) END) as average_time,
-        COUNT(o.id) as occurrences,
-        ROUND(COUNT(o.id) * 100.0 / COUNT(*), 2) as occurrence_rate,
-        ROUND(
-          (SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) * 0.7 +
-          (100 - AVG(CASE WHEN d.status = 'DELIVERED' THEN TIMESTAMPDIFF(MINUTE, d.created_at, d.updated_at) END) / 60) * 0.2 +
-          (100 - COUNT(o.id) * 100.0 / COUNT(*)) * 0.1
-        , 2) as performance_score
-      FROM delivery_notes d
-      LEFT JOIN users u ON d.driver_id = u.id
-      LEFT JOIN delivery_occurrences o ON d.id = o.delivery_id
-      ${whereClause}
-      GROUP BY d.driver_id, u.full_name
-      ORDER BY performance_score DESC
-    `, params);
-
-    res.json({
-      success: true,
-      data: rows
-    });
-
-  } catch (error) {
-    console.error('Erro ao gerar relatório de desempenho:', error);
-    res.status(500).json({ error: error.message });
+  if (lastError) {
+    throw lastError;
   }
-});
-
-/**
- * @swagger
- * /api/reports/client-volume:
- *   get:
- *     summary: Relatório por cliente
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: start_date
- *         required: true
- *         schema:
- *           type: string
- *       - in: query
- *         name: end_date
- *         required: true
- *         schema:
- *           type: string
- *       - in: query
- *         name: client_id
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Relatório por cliente
- */
-app.get('/api/reports/client-volume', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
-  try {
-    const { start_date, end_date, client_id } = req.query;
-    
-    if (!start_date || !end_date) {
-      return res.status(400).json({ error: 'start_date e end_date são obrigatórios' });
-    }
-
-    let whereClause = 'WHERE d.company_id = ? AND DATE(d.created_at) BETWEEN ? AND ?';
-    const params = [req.user.company_id, start_date, end_date];
-
-    if (client_id) {
-      whereClause += ' AND d.client_id = ?';
-      params.push(client_id);
-    }
-
-    const [rows] = await pool.query(`
-      SELECT 
-        d.client_id,
-        c.name as client_name,
-        COUNT(*) as total_deliveries,
-        SUM(d.merchandise_value) as total_value,
-        AVG(d.merchandise_value) as average_value,
-        SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) as completed_deliveries,
-        ROUND(SUM(CASE WHEN d.status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as success_rate,
-        ROUND(
-          (COUNT(*) - LAG(COUNT(*)) OVER (ORDER BY DATE(d.created_at))) * 100.0 / 
-          NULLIF(LAG(COUNT(*)) OVER (ORDER BY DATE(d.created_at)), 0)
-        , 2) as growth_rate
-      FROM delivery_notes d
-      LEFT JOIN clients c ON d.client_id = c.id
-      ${whereClause}
-      GROUP BY d.client_id, c.name
-      ORDER BY total_value DESC
-    `, params);
-
-    res.json({
-      success: true,
-      data: rows
-    });
-
-  } catch (error) {
-    console.error('Erro ao gerar relatório por cliente:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
+  return [[], []];
+};
 
 /**
  * @swagger
  * /api/dashboard/kpis:
  *   get:
- *     summary: KPIs do dashboard
+ *     summary: Retorna os KPIs para o dashboard do supervisor.
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: KPIs do dashboard
+ *         description: KPIs retornados com sucesso.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     today_deliveries:
+ *                       type: object
+ *                       properties:
+ *                         total:
+ *                           type: integer
+ *                         completed:
+ *                           type: integer
+ *                         pending:
+ *                           type: integer
+ *                         in_progress:
+ *                           type: integer
+ *                     active_drivers:
+ *                       type: integer
+ *                     pending_occurrences:
+ *                       type: integer
  */
-app.get('/api/dashboard/kpis', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
+app.get('/api/dashboard/kpis', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const { company_id } = req.user;
+    const today = new Date().toISOString().slice(0, 10);
 
-    // Entregas de hoje
-    const [todayDeliveries] = await pool.query(`
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) as completed,
-        SUM(CASE WHEN status IN ('PENDING', 'IN_TRANSIT') THEN 1 ELSE 0 END) as pending
-      FROM delivery_notes 
-      WHERE company_id = ? AND DATE(created_at) = CURDATE()
-    `, [companyId]);
+    // Define an explicit "is today" expression so we don't accidentally prefer delivery_date_expected
+    // when it was intentionally set to another date. Rule: a delivery is "today" when
+    // - delivery_date_expected is set and equals CURDATE(), OR
+    // - delivery_date_expected is NULL and DATE(created_at) = CURDATE()
+    const isTodayExpr = `((dn.delivery_date_expected IS NOT NULL AND DATE(dn.delivery_date_expected) = CURDATE()) OR (dn.delivery_date_expected IS NULL AND DATE(dn.created_at) = CURDATE()))`;
 
-    // Motoristas ativos
-    const [activeDrivers] = await pool.query(`
-      SELECT COUNT(*) as count
-      FROM drivers 
-      WHERE company_id = ? AND status = 'active'
-    `, [companyId]);
+    const deliveryStatsQueries = [
+      {
+        sql: `SELECT
+            COUNT(CASE WHEN ${isTodayExpr} THEN 1 END) as total_deliveries,
+            COUNT(CASE WHEN ${isTodayExpr} AND (UPPER(dn.status) IN (${completedPlaceholders}) OR dr.id IS NOT NULL OR dn.delivery_date_actual IS NOT NULL) THEN 1 END) as completed_deliveries,
+            COUNT(CASE WHEN ${isTodayExpr} AND UPPER(dn.status) IN (${pendingPlaceholders}) THEN 1 END) as pending_deliveries,
+            COUNT(CASE WHEN ${isTodayExpr} AND (
+              UPPER(dn.status) IN (${inProgressPlaceholders})
+              OR EXISTS(
+                SELECT 1 FROM route_deliveries rd JOIN routes r ON rd.route_id = r.id
+                WHERE rd.delivery_note_id = dn.id AND r.company_id = dn.company_id AND DATE(r.start_datetime) = CURDATE() AND UPPER(r.status) IN (${routeStatusesPlaceholders})
+              )
+            ) THEN 1 END) as in_progress_deliveries
+          FROM delivery_notes dn
+          LEFT JOIN delivery_receipts dr ON dr.delivery_note_id = dn.id
+          WHERE dn.company_id = ?`,
+          params: [...COMPLETED_STATUSES_UPPER, ...PENDING_STATUSES_UPPER, ...IN_PROGRESS_STATUSES_UPPER, ...ROUTE_STARTED_STATUSES_UPPER, company_id],
+      },
+      {
+        // Fallback: count by created_at only
+        sql: `SELECT
+          COUNT(dn.id) AS total_deliveries,
+          SUM(CASE WHEN (UPPER(dn.status) IN (${completedPlaceholders}) OR EXISTS(SELECT 1 FROM delivery_receipts dr2 WHERE dr2.delivery_note_id = dn.id) OR dn.delivery_date_actual IS NOT NULL) THEN 1 ELSE 0 END) AS completed_deliveries,
+          SUM(CASE WHEN UPPER(dn.status) IN (${pendingPlaceholders}) THEN 1 ELSE 0 END) AS pending_deliveries,
+          SUM(CASE WHEN (UPPER(dn.status) IN (${inProgressPlaceholders}) OR EXISTS(
+            SELECT 1 FROM route_deliveries rd JOIN routes r ON rd.route_id = r.id
+            WHERE rd.delivery_note_id = dn.id AND r.company_id = dn.company_id AND DATE(r.start_datetime) = CURDATE() AND UPPER(r.status) IN (${routeStatusesPlaceholders})
+          )) THEN 1 ELSE 0 END) AS in_progress_deliveries
+        FROM delivery_notes dn
+        WHERE dn.company_id = ? AND DATE(dn.created_at) = CURDATE()`,
+        params: [...COMPLETED_STATUSES_UPPER, ...PENDING_STATUSES_UPPER, ...IN_PROGRESS_STATUSES_UPPER, ...ROUTE_STARTED_STATUSES_UPPER, company_id],
+      },
+    ];
 
-    // Ocorrências pendentes
-    const [pendingOccurrences] = await pool.query(`
-      SELECT COUNT(*) as count
-      FROM delivery_occurrences 
-      WHERE company_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-    `, [companyId]);
+    const [deliveryStatsRows] = await runWithFallbacks(deliveryStatsQueries);
+    const deliveryStats = Array.isArray(deliveryStatsRows) && deliveryStatsRows.length ? deliveryStatsRows[0] : {};
 
-    // Score de performance (média dos motoristas)
-    const [performanceScore] = await pool.query(`
-      SELECT ROUND(AVG(
-        (SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) * 0.7 +
-        (100 - AVG(CASE WHEN status = 'DELIVERED' THEN TIMESTAMPDIFF(MINUTE, created_at, updated_at) END) / 60) * 0.2 +
-        (100 - (SELECT COUNT(*) FROM delivery_occurrences o WHERE o.delivery_id = d.id) * 100.0 / COUNT(*)) * 0.1
-      ), 2) as score
-      FROM delivery_notes d
-      WHERE company_id = ? AND DATE(created_at) = CURDATE()
-      GROUP BY driver_id
-    `, [companyId]);
+    const totalDeliveries = Number(deliveryStats.total_deliveries) || 0;
+    const completedDeliveries = Number(deliveryStats.completed_deliveries) || 0;
+    const pendingDeliveries = Number(deliveryStats.pending_deliveries) || 0;
+    const inProgressDeliveries = Number(deliveryStats.in_progress_deliveries) || 0;
 
-    // Receita de hoje
-    const [revenueToday] = await pool.query(`
-      SELECT SUM(merchandise_value) as total
-      FROM delivery_notes 
-      WHERE company_id = ? AND DATE(created_at) = CURDATE() AND status = 'DELIVERED'
-    `, [companyId]);
+    // More robust active drivers calculation: combine routes that started today with tracking points
+    const activeDriversCountSql = `
+      SELECT COUNT(DISTINCT driver_id) AS active_drivers FROM (
+        SELECT driver_id FROM routes WHERE company_id = ? AND DATE(start_datetime) = CURDATE() AND UPPER(status) IN (${routeStatusesPlaceholders})
+        UNION
+        SELECT driver_id FROM tracking_points WHERE company_id = ? AND DATE(timestamp) = CURDATE()
+      ) t
+    `;
 
-    // Taxa de eficiência
-    const [efficiencyRate] = await pool.query(`
-      SELECT ROUND(
-        SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
-      , 2) as rate
-      FROM delivery_notes 
-      WHERE company_id = ? AND DATE(created_at) = CURDATE()
-    `, [companyId]);
+    const [activeDriversRows] = await runWithFallbacks([
+      { sql: activeDriversCountSql, params: [company_id, ...ROUTE_STARTED_STATUSES_UPPER, company_id] }
+    ]);
+    const activeDrivers = Number(activeDriversRows?.[0]?.active_drivers) || 0;
 
-    res.json({
-      success: true,
-      data: {
-        today_deliveries: todayDeliveries[0],
-        active_drivers: activeDrivers[0].count,
-        pending_occurrences: pendingOccurrences[0].count,
-        performance_score: performanceScore[0]?.score || 0,
-        revenue_today: revenueToday[0].total || 0,
-        efficiency_rate: efficiencyRate[0].rate || 0
+    const occurrencesQueries = [
+      {
+        sql: `SELECT COUNT(DISTINCT do.id) AS pending_occurrences
+          FROM delivery_occurrences do
+          JOIN delivery_notes dn ON dn.id = do.delivery_id
+          WHERE dn.company_id = ? AND UPPER(dn.status) NOT IN (${completedPlaceholders})`, // Ocorrências de entregas não finalizadas
+        params: [company_id, ...COMPLETED_STATUSES_UPPER],
+      },
+      {
+        sql: `SELECT COUNT(DISTINCT do.id) AS pending_occurrences
+          FROM delivery_occurrences do
+          WHERE do.company_id = ?`, // Fallback: conta todas as ocorrências da empresa
+        params: [company_id],
+      },
+    ];
+
+    const [occurrencesRows] = await runWithFallbacks(occurrencesQueries);
+    const pendingOccurrences = Number(occurrencesRows?.[0]?.pending_occurrences) || 0;
+
+    const kpis = {
+      today_deliveries: {
+        total: totalDeliveries,
+        completed: completedDeliveries,
+        pending: pendingDeliveries,
+        in_progress: inProgressDeliveries,
+      },
+      active_drivers: activeDrivers,
+      pending_occurrences: pendingOccurrences,
+    };
+
+    // Fetch list of deliveries for today (for UI list view)
+    try {
+      // Use client_name_extracted and try to resolve assigned driver via route_deliveries -> routes -> drivers -> users
+      const deliveriesListQueries = [
+        {
+          sql: `SELECT dn.id,
+            dn.client_id,
+            dn.client_name_extracted AS client_name,
+            dn.status,
+            (
+              SELECT rd.route_id FROM route_deliveries rd WHERE rd.delivery_note_id = dn.id LIMIT 1
+            ) AS route_id,
+            (
+              SELECT u.full_name FROM users u JOIN drivers d ON u.id = d.user_id WHERE d.id = dn.driver_id LIMIT 1
+            ) as driver_name,
+            dn.created_at,
+            dn.delivery_date_expected,
+            dr.id AS receipt_id,
+            ${isTodayExpr} AS is_today,
+            (UPPER(dn.status) IN (${completedLiterals}) OR dr.id IS NOT NULL OR dn.delivery_date_actual IS NOT NULL) AS is_completed
+          FROM delivery_notes dn
+          LEFT JOIN delivery_receipts dr ON dr.delivery_note_id = dn.id
+          WHERE dn.company_id = ? AND ${isTodayExpr}
+          ORDER BY dn.created_at DESC LIMIT 1000`,
+          params: [company_id],
+        },
+    ];
+
+      const [deliveriesRows] = await runWithFallbacks(deliveriesListQueries);
+      let resolvedDeliveries = Array.isArray(deliveriesRows) ? deliveriesRows : [];
+
+      // If we have KPI counts indicating there are deliveries today but the
+      // is_today-based query returned no rows (possible due to data inconsistencies),
+      // fall back to selecting by DATE(created_at) = CURDATE() so the UI isn't empty.
+      if ((!resolvedDeliveries || resolvedDeliveries.length === 0) && Number(kpis.today_deliveries?.total || 0) > 0) {
+        console.warn('[Reports] is_today query returned no rows but KPI total > 0 — running fallback by created_at');
+        try {
+          const fallbackSql = `SELECT dn.id, dn.client_id, dn.client_name_extracted AS client_name, dn.status,
+            (SELECT rd.route_id FROM route_deliveries rd WHERE rd.delivery_note_id = dn.id LIMIT 1) AS route_id,
+            (SELECT u.full_name FROM users u JOIN drivers d ON u.id = d.user_id WHERE d.id = dn.driver_id LIMIT 1) as driver_name,
+            dn.created_at, dn.delivery_date_expected, dr.id AS receipt_id, DATE(dn.created_at) = CURDATE() AS is_today
+            , (UPPER(dn.status) IN (${completedLiterals}) OR dr.id IS NOT NULL OR dn.delivery_date_actual IS NOT NULL) AS is_completed
+            FROM delivery_notes dn
+            LEFT JOIN delivery_receipts dr ON dr.delivery_note_id = dn.id
+            WHERE dn.company_id = ? AND DATE(dn.created_at) = CURDATE()
+            ORDER BY dn.created_at DESC LIMIT 1000`;
+          const [fallbackRows] = await pool.query(fallbackSql, [company_id]);
+          resolvedDeliveries = Array.isArray(fallbackRows) ? fallbackRows : [];
+        } catch (fallbackErr) {
+          console.warn('[Reports] Fallback delivery list query failed:', fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+        }
       }
-    });
 
+      kpis.today_deliveries.list = resolvedDeliveries;
+    } catch (err) {
+      console.warn('Erro ao buscar lista de entregas:', err && err.message ? err.message : err);
+      kpis.today_deliveries.list = [];
+    }
+
+    // Fetch active drivers list: combine routes that started today and tracking_points from today
+    try {
+      // Build a list of active drivers combining routes and tracking points
+      const activeDriversListSql = `
+        SELECT DISTINCT d.id, u.full_name as name, COALESCE(tp.last_ts, r.start_datetime, d.last_location_update) as last_seen
+        FROM drivers d
+        JOIN users u ON d.user_id = u.id
+        LEFT JOIN (
+          SELECT driver_id, MAX(timestamp) as last_ts FROM tracking_points WHERE company_id = ? AND DATE(timestamp) = CURDATE() GROUP BY driver_id
+        ) tp ON tp.driver_id = d.id
+        LEFT JOIN (
+          SELECT driver_id, start_datetime FROM routes WHERE company_id = ? AND DATE(start_datetime) = CURDATE() AND UPPER(status) IN (${routeStatusesPlaceholders})
+        ) r ON r.driver_id = d.id
+        WHERE d.company_id = ? AND (r.driver_id IS NOT NULL OR tp.last_ts IS NOT NULL)
+        ORDER BY last_seen DESC
+        LIMIT 1000
+      `;
+
+      const [activeDriversListRows] = await runWithFallbacks([
+        { sql: activeDriversListSql, params: [company_id, company_id, ...ROUTE_STARTED_STATUSES_UPPER, company_id] }
+      ]);
+      kpis.active_drivers_list = Array.isArray(activeDriversListRows) ? activeDriversListRows : [];
+
+    } catch (err) {
+      console.warn('Erro ao buscar lista de motoristas ativos:', err && err.message ? err.message : err);
+      kpis.active_drivers_list = [];
+    }
+
+    res.json({ success: true, data: kpis });
   } catch (error) {
-    console.error('Erro ao obter KPIs:', error);
-    res.status(500).json({ error: error.message });
+    // Log full stack for debugging
+    console.error('Erro ao buscar KPIs:', error && error.stack ? error.stack : error);
+
+    // Normalize error shape for the frontend: `error` should be a string so
+    // frontend code that calls string methods (like includes) won't crash.
+    const responseMessage = (process.env.NODE_ENV === 'production')
+      ? 'Erro interno do servidor ao buscar KPIs.'
+      : (error && error.message) ? String(error.message) : 'Erro desconhecido';
+
+    const responseBody = { success: false, error: responseMessage };
+    // In non-production include full stack trace under a separate key for debugging
+    if (process.env.NODE_ENV !== 'production' && error && error.stack) {
+      responseBody.error_details = String(error.stack);
+    }
+
+    res.status(500).json(responseBody);
   }
 });
 
 /**
- * @swagger
- * /api/dashboard/company-stats:
- *   get:
- *     summary: Estatísticas da empresa
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Estatísticas da empresa
+ * GET /api/reports/canhotos
+ * Retorna entregas finalizadas com informações do motorista, cliente, data e link para a imagem do canhoto (se houver).
  */
-app.get('/api/dashboard/company-stats', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
+app.get('/api/reports/canhotos', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (req, res) => {
   try {
-    const companyId = req.user.company_id;
+    const { company_id } = req.user;
 
-    // Crescimento mensal
-    const [monthlyGrowth] = await pool.query(`
-      SELECT ROUND(
-        (COUNT(*) - LAG(COUNT(*)) OVER (ORDER BY YEAR(created_at), MONTH(created_at))) * 100.0 / 
-        NULLIF(LAG(COUNT(*)) OVER (ORDER BY YEAR(created_at), MONTH(created_at)), 0)
-      , 2) as growth
-      FROM delivery_notes 
-      WHERE company_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MONTH)
-      GROUP BY YEAR(created_at), MONTH(created_at)
-      ORDER BY YEAR(created_at) DESC, MONTH(created_at) DESC
-      LIMIT 1
-    `, [companyId]);
+    const toSingleValue = (value) => (Array.isArray(value) ? value[0] : value);
+    const normalizeNumericId = (value) => {
+      const single = toSingleValue(value);
+      if (single === undefined || single === null) return null;
+      const trimmed = typeof single === 'string' ? single.trim() : String(single).trim();
+      if (!trimmed) return null;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const normalizeDateParam = (value) => {
+      const single = toSingleValue(value);
+      if (single === undefined || single === null) return null;
+      const trimmed = String(single).trim();
+      return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+    };
 
-    // Eficiência dos motoristas
-    const [driverEfficiency] = await pool.query(`
-      SELECT ROUND(AVG(
-        SUM(CASE WHEN status = 'DELIVERED' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
-      ), 2) as efficiency
-      FROM delivery_notes 
-      WHERE company_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY driver_id
-    `, [companyId]);
+    const userType = typeof req.user?.user_type === 'string' ? req.user.user_type.toUpperCase() : '';
+    let effectiveCompanyId = normalizeNumericId(company_id);
+    const requestedCompanyId = normalizeNumericId(req.query?.company_id);
+    if (requestedCompanyId !== null && (userType === 'MASTER' || userType === 'ADMIN' || requestedCompanyId === effectiveCompanyId)) {
+      effectiveCompanyId = requestedCompanyId;
+    }
+    if (effectiveCompanyId === null) {
+      return res.status(400).json({ success: false, error: 'Empresa nao definida para consulta.' });
+    }
 
-    // Satisfação dos clientes (baseado em ocorrências)
-    const [clientSatisfaction] = await pool.query(`
-      SELECT ROUND(
-        (COUNT(DISTINCT d.id) - COUNT(DISTINCT o.delivery_id)) * 100.0 / COUNT(DISTINCT d.id)
-      , 2) as satisfaction
-      FROM delivery_notes d
-      LEFT JOIN delivery_occurrences o ON d.id = o.delivery_id
-      WHERE d.company_id = ? AND d.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-    `, [companyId]);
+    const driverIdFilter = normalizeNumericId(req.query?.driver_id);
+    let startDateFilter = normalizeDateParam(req.query?.start_date);
+    let endDateFilter = normalizeDateParam(req.query?.end_date);
+    if (startDateFilter && endDateFilter && startDateFilter > endDateFilter) {
+      const temp = startDateFilter;
+      startDateFilter = endDateFilter;
+      endDateFilter = temp;
+    }
+    const searchFilterRaw = toSingleValue(req.query?.search);
+    const searchFilter = typeof searchFilterRaw === 'string' ? searchFilterRaw.trim() : '';
+    const normalizedSearch = searchFilter ? searchFilter : null;
 
-    // Tendência de receita
-    const [revenueTrend] = await pool.query(`
-      SELECT 
-        DATE(created_at) as date,
-        SUM(merchandise_value) as revenue
-      FROM delivery_notes 
-      WHERE company_id = ? AND status = 'DELIVERED' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-      LIMIT 30
-    `, [companyId]);
+    const dateExpr = 'DATE(COALESCE(dn.delivery_date_actual, dn.created_at))';
 
-    // Tendência de entregas
-    const [deliveryTrend] = await pool.query(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as deliveries
-      FROM delivery_notes 
-      WHERE company_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-      LIMIT 30
-    `, [companyId]);
+    const buildReceiptsQuery = ({ includeGcsPath = true, includeFilePath = true, includeFilename = true } = {}) => {
+      const columns = [
+        'dn.id AS delivery_id',
+        'dn.nf_number AS nf_number',
+        'dn.client_id',
+        'dn.company_id AS company_id',
+        'dn.client_name_extracted AS client_name',
+        'dn.status',
+        'COALESCE(dn.delivery_date_actual, dn.created_at) AS date',
+        'COALESCE(d.id, d_user.id, dn.driver_id) AS driver_id',
+        'COALESCE(u.full_name, u_direct.full_name) AS driver_name',
+        'dr.id AS receipt_id',
+        'dr.image_url',
+        includeGcsPath ? 'dr.gcs_path' : 'NULL AS gcs_path',
+        includeFilePath ? 'dr.file_path' : 'NULL AS file_path',
+        includeFilename ? 'dr.filename' : 'NULL AS filename',
+      ];
 
-    res.json({
-      success: true,
-      data: {
-        monthly_growth: monthlyGrowth[0]?.growth || 0,
-        driver_efficiency: driverEfficiency[0]?.efficiency || 0,
-        client_satisfaction: clientSatisfaction[0]?.satisfaction || 0,
-        revenue_trend: revenueTrend,
-        delivery_trend: deliveryTrend
+      const selectClause = columns.join(',\n      ');
+
+      const conditions = [
+        'dn.company_id = ?',
+        `(
+          UPPER(dn.status) IN (${completedLiterals})
+          OR dr.id IS NOT NULL
+          OR dn.delivery_date_actual IS NOT NULL
+        )`,
+      ];
+      const params = [effectiveCompanyId];
+
+      if (driverIdFilter !== null) {
+        conditions.push('COALESCE(d.id, d_user.id, dn.driver_id) = ?');
+        params.push(driverIdFilter);
       }
-    });
+      if (startDateFilter) {
+        conditions.push(`${dateExpr} >= ?`);
+        params.push(startDateFilter);
+      }
+      if (endDateFilter) {
+        conditions.push(`${dateExpr} <= ?`);
+        params.push(endDateFilter);
+      }
+      if (normalizedSearch) {
+        const likeValue = `%${normalizedSearch}%`;
+        conditions.push(`(
+          dn.nf_number LIKE ?
+          OR dn.client_name_extracted LIKE ?
+          OR u.full_name LIKE ?
+          OR u_direct.full_name LIKE ?
+          OR dr.filename LIKE ?
+        )`);
+        params.push(likeValue, likeValue, likeValue, likeValue, likeValue);
+      }
 
+      const whereClause = conditions.join("\n      AND ");
+
+      const sql = `SELECT
+      ${selectClause}
+    FROM delivery_notes dn
+    LEFT JOIN delivery_receipts dr ON dr.delivery_note_id = dn.id
+    LEFT JOIN drivers d ON d.id = dn.driver_id
+    LEFT JOIN drivers d_user ON d_user.user_id = dn.driver_id
+    LEFT JOIN users u ON u.id = d.user_id
+    LEFT JOIN users u_direct ON u_direct.id = dn.driver_id
+    WHERE
+      ${whereClause}
+    ORDER BY date DESC, dn.created_at DESC
+    LIMIT 2000`;
+
+      return { sql, params };
+    };
+
+    const receiptQueries = [
+      buildReceiptsQuery({ includeGcsPath: true, includeFilePath: true, includeFilename: true }),
+      buildReceiptsQuery({ includeGcsPath: true, includeFilePath: false, includeFilename: false }),
+      buildReceiptsQuery({ includeGcsPath: false, includeFilePath: false, includeFilename: false }),
+    ];
+
+    const [rows] = await runWithFallbacks(receiptQueries);
+
+    const results = Array.isArray(rows) ? rows.map(r => ({
+      id: r.delivery_id,
+      delivery_id: r.delivery_id,
+      nf_number: r.nf_number || null,
+      client_id: r.client_id,
+      client_name: r.client_name,
+      status: r.status,
+      date: r.date,
+      driver_id: r.driver_id,
+      driver_name: r.driver_name,
+      receipt_id: r.receipt_id,
+      image_url: r.image_url || r.gcs_path || r.file_path || null,
+      gcs_path: r.gcs_path || null,
+      file_path: r.file_path || null,
+      filename: r.filename || null,
+    })) : [];
+
+    res.json({ success: true, data: results });
   } catch (error) {
-    console.error('Erro ao obter estatísticas:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Erro ao buscar canhotos:', error && error.stack ? error.stack : error);
+    const responseMessage = (process.env.NODE_ENV === 'production')
+      ? 'Erro interno ao buscar canhotos.'
+      : (error && error.message) ? String(error.message) : 'Erro desconhecido';
+    const responseBody = { success: false, error: responseMessage };
+    if (process.env.NODE_ENV !== 'production' && error && error.stack) {
+      responseBody.error_details = String(error.stack);
+    }
+    res.status(500).json(responseBody);
   }
 });
 
+const PORT = process.env.REPORTS_SERVICE_PORT || 3006;
 if (require.main === module) {
-  app.listen(3006, () => console.log('Reports Service rodando na porta 3006'));
+  app.listen(PORT, () => console.log(`Reports Service rodando na porta ${PORT}`));
 }
 
-module.exports = app; 
+module.exports = app;

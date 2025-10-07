@@ -1,8 +1,9 @@
+require('dotenv').config();
+
 const express = require('express');
 const pool = require('../../shared/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const cors = require('cors');
