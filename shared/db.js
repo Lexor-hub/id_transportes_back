@@ -1,12 +1,18 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
+const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length) {
+  throw new Error(`Missing database environment variables: ${missingEnv.join(', ')}`);
+}
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || '207.180.252.4',
-  user: process.env.DB_USER || 'glaubermag',
-  password: process.env.DB_PASSWORD || 'C@C3te12',
-  database: process.env.DB_NAME || 'id_transportes',
-  port: parseInt(process.env.DB_PORT) || 3306,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: Number(process.env.DB_PORT),
   waitForConnections: true,
   connectionLimit: 15, // 🔧 Aumentado para suportar múltiplos serviços
   queueLimit: 0,

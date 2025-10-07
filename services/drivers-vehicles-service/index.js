@@ -5,7 +5,10 @@ const app = express();
 app.use(express.json());
 const cors = require('cors');
 
-const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a';
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET environment variable is required for Drivers/Vehicles service');
+}
 
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
@@ -212,6 +215,7 @@ app.put('/api/vehicles/:id', authorize(['ADMIN', 'SUPERVISOR']), async (req, res
 });
 
 if (require.main === module) {
-  app.listen(3002, () => console.log('Drivers/Vehicles Service rodando na porta 3002'));
+  const PORT = Number(process.env.PORT ?? 3002);
+  app.listen(PORT, () => console.log(`Drivers/Vehicles Service rodando na porta ${PORT}`));
 }
-module.exports = app; 
+module.exports = app;

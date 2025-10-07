@@ -8,6 +8,10 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const cors = require('cors');
 
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET environment variable is required for Companies service');
+}
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
@@ -34,7 +38,7 @@ function authorize(roles = []) {
     if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
     const token = auth.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a");
+      const decoded = jwt.verify(token, jwtSecret);
       if (roles.length && !roles.includes(decoded.user_type)) {
         return res.status(403).json({ error: 'Acesso negado' });
       }
@@ -333,6 +337,7 @@ app.put('/api/companies/:id/settings', authorize(['MASTER', 'ADMIN']), async (re
 });
 
 if (require.main === module) {
-  app.listen(3007, () => console.log('Companies Service rodando na porta 3007'));
+  const PORT = Number(process.env.PORT ?? 3007);
+  app.listen(PORT, () => console.log(`Companies Service rodando na porta ${PORT}`));
 }
-module.exports = app; 
+module.exports = app;

@@ -14,7 +14,10 @@ const pdfParse = require('pdf-parse');
 const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
 const { Storage } = require('@google-cloud/storage');
 
-const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
+const jwtSecret = process.env.JWT_SECRET;
+if (!jwtSecret) {
+  throw new Error('JWT_SECRET environment variable is required for Deliveries/Routes service');
+}
 
 const authorize = (allowedRoles) => {
   return (req, res, next) => {
@@ -1011,7 +1014,8 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
 });
 
 if (require.main === module) {
-  app.listen(3003, () => console.log('Deliveries & Routes Service rodando na porta 3003'));
+  const PORT = Number(process.env.PORT ?? 3003);
+  app.listen(PORT, () => console.log(`Deliveries & Routes Service rodando na porta ${PORT}`));
 }
 
 module.exports = app;
