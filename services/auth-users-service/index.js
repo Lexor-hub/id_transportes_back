@@ -55,7 +55,8 @@ app.use(express.json());
 const allowedOrigins = [
   'http://localhost:8080', // Frontend local (se aplicável)
   'http://localhost:5173', // Frontend local com Vite (padrão)
-  'https://idtransportes-hvlg5yh96-kethelyn-cavalari-de-souzas-projects.vercel.app' // URL do seu frontend na Vercel
+  'https://idtransportes-hvlg5yh96-kethelyn-cavalari-de-souzas-projects.vercel.app', // URL antiga
+  'https://idtransportes-mihwyg6ur-kethelyn-cavalari-de-souzas-projects.vercel.app'  // ✅ Nova URL do Vercel preview
 ];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 
