@@ -50,7 +50,15 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
   throw error;
 });
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
+
+// 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
+const allowedOrigins = [
+  'http://localhost:8080', // Frontend local (se aplicável)
+  'http://localhost:5173', // Frontend local com Vite (exemplo)
+  'https://idtransportes-kk1bvm89x-kethelyn-cavalari-de-souzas-projects.vercel.app' // URL do seu frontend na Vercel
+];
+app.use(cors({ origin: allowedOrigins, credentials: true }));
+
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // Health check (useful to verify the service is reachable during development)
 app.get('/_health', (req, res) => {
@@ -408,8 +416,3 @@ if (require.main === module) {
     });
 }
 module.exports = app;
-
-
-
-
-
