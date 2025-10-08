@@ -6,18 +6,11 @@
 // ============================================================================
 
 const API_BASE_URLS = {
-  // Em produção (Vercel), usa a variável de ambiente. Em desenvolvimento, usa localhost.
-  // O nome da variável (VITE_API_BASE_URL) depende do seu framework (Vite, Next.js, etc.)
-  AUTH_SERVICE: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3008',
-  // O serviço de autenticação agora está na porta 3008, conforme configurado no Railway.
-  // Os outros serviços serão acessados através de um futuro API Gateway.
-  AUTH_USERS: 'http://localhost:3001',
-  DRIVERS: 'http://localhost:3002',
-  DELIVERIES: 'http://localhost:3003',
-  RECEIPTS: 'http://localhost:3004',
-  TRACKING: 'http://localhost:3005',
-  REPORTS: 'http://localhost:3006',
-  COMPANIES: 'http://localhost:3007'
+  // ✅ Ponto de entrada principal da API.
+  // Em produção (Vercel/Railway), usa a variável de ambiente. Em desenvolvimento, usa localhost.
+  // O nome da variável (ex: VITE_API_BASE_URL) depende do seu framework (Vite, Next.js, etc.).
+  // A porta local deve ser 3008, que é a porta que o serviço está usando.
+  API_GATEWAY: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3008'
 };
 
 // ============================================================================
@@ -26,7 +19,7 @@ const API_BASE_URLS = {
 
 class AuthService {
   constructor() {
-    this.baseURL = API_BASE_URLS.AUTH_SERVICE;
+    this.baseURL = API_BASE_URLS.API_GATEWAY;
   }
 
   async login(username, password) {

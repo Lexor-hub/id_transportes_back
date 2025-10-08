@@ -54,10 +54,14 @@ app.use(express.json());
 // 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
 const allowedOrigins = [
   'http://localhost:8080', // Frontend local (se aplicável)
-  'http://localhost:5173', // Frontend local com Vite (exemplo)
-  'https://idtransportes-kk1bvm89x-kethelyn-cavalari-de-souzas-projects.vercel.app' // URL do seu frontend na Vercel
+  'http://localhost:5173', // Frontend local com Vite (padrão)
+  'https://idtransportes-hvlg5yh96-kethelyn-cavalari-de-souzas-projects.vercel.app' // URL do seu frontend na Vercel
 ];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
+
+// Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
+// Isso evita que o middleware de autenticação bloqueie o acesso a eles.
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // Health check (useful to verify the service is reachable during development)
