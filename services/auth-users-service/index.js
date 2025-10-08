@@ -215,11 +215,22 @@ app.post('/api/auth/forgot-password', async (req, res) => {
  */
 app.get('/api/auth/companies', authorize(), async (req, res) => {
   try {
-    const userId = req.user.id;
-    const [companies] = await pool.query(
-      'SELECT c.id, c.name, c.domain, c.logo_url FROM companies c JOIN user_companies uc ON c.id = uc.company_id WHERE uc.user_id = ? AND c.is_active = 1',
-      [userId]
-    );
+    const { id: userId, user_type: userType, company_id: userCompanyId } = req.user;
+    let companies = [];
+
+    if (userType === 'MASTER') {
+      // Usuário MASTER pode ver todas as empresas ativas
+      console.log('🏢 Buscando todas as empresas para usuário MASTER...');
+      const [allCompanies] = await pool.query(
+        'SELECT id, name, domain, logo_url FROM companies WHERE is_active = 1'
+      );
+      companies = allCompanies;
+    } else {
+      // Outros usuários veem apenas a própria empresa
+      console.log(`🏢 Buscando empresa (ID: ${userCompanyId}) para usuário padrão...`);
+      const [userCompany] = await pool.query('SELECT id, name, domain, logo_url FROM companies WHERE id = ? AND is_active = 1', [userCompanyId]);
+      companies = userCompany;
+    }
     res.json({ success: true, data: companies });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
