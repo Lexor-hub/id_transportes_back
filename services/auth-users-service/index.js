@@ -237,6 +237,70 @@ app.get('/api/auth/companies', authorize(), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /api/auth/select-company:
+ *   post:
+ *     summary: Seleciona uma empresa para o usuário e retorna um novo token
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               company_id:
+ *                 type: integer
+ *     responses:
+ *       200:
+ *         description: Novo token JWT com a empresa selecionada
+ *       401:
+ *         description: Token inválido ou não fornecido
+ *       403:
+ *         description: Acesso negado à empresa solicitada
+ */
+app.post('/api/auth/select-company', authorize(), async (req, res) => {
+  const { company_id: selectedCompanyId } = req.body;
+  const { id: userId, user_type: userType } = req.user;
+
+  if (!selectedCompanyId) {
+    return res.status(400).json({ success: false, error: 'O ID da empresa é obrigatório.' });
+  }
+
+  try {
+    // 1. Validar se o usuário tem acesso à empresa solicitada
+    if (userType !== 'MASTER') {
+      const [userRows] = await pool.query('SELECT company_id FROM users WHERE id = ?', [userId]);
+      if (userRows.length === 0 || userRows[0].company_id !== selectedCompanyId) {
+        return res.status(403).json({ success: false, error: 'Acesso negado a esta empresa.' });
+      }
+    }
+
+    // 2. Buscar os dados completos do usuário e da empresa para gerar o novo token e a resposta
+    const [rows] = await pool.query(
+      'SELECT u.*, c.name as company_name, c.domain as company_domain FROM users u LEFT JOIN companies c ON u.company_id = c.id WHERE u.id = ?',
+      [userId]
+    );
+    const user = rows[0];
+
+    // 3. Gerar o novo token JWT com o company_id final
+    const finalToken = jwt.sign(
+      { id: user.id, user_type: user.user_type, company_id: selectedCompanyId },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    // Remover o hash da senha da resposta
+    delete user.password_hash;
+
+    res.json({ success: true, data: { token: finalToken, user } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Listar usuÃ¡rios (apenas ADMIN e MASTER)
 app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
   try {
