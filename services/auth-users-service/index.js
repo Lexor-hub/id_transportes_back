@@ -52,13 +52,23 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
 app.use(express.json());
 
 // 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
-const allowedOrigins = [
-  'http://localhost:8080', // Frontend local (se aplicável)
-  'http://localhost:5173', // Frontend local com Vite (padrão)
-  'https://idtransportes-hvlg5yh96-kethelyn-cavalari-de-souzas-projects.vercel.app', // URL antiga
-  'https://idtransportes-mihwyg6ur-kethelyn-cavalari-de-souzas-projects.vercel.app'  // ✅ Nova URL do Vercel preview
+const whitelist = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  /https:\/\/idtransportes-.*\.vercel\.app$/, // Permite todos os subdomínios de preview e produção
 ];
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Permite requisições sem 'origin' (ex: Postman) ou que estejam na whitelist
+    if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+};
+app.use(cors(corsOptions));
 
 // Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
 // Isso evita que o middleware de autenticação bloqueie o acesso a eles.
