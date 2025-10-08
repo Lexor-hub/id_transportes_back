@@ -16,8 +16,7 @@ if (process.env.DATABASE_URL) {
   });
 } else {
   // Fallback para variáveis de ambiente separadas (ambiente de desenvolvimento)
-  const requiredEnv = ['MYSQLHOST', 'MYSQLUSER', 'MYSQLPASSWORD', 'MYSQLDATABASE', 'MYSQLPORT'];
-
+  const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
   const missingEnv = requiredEnv.filter((key) => !process.env[key]);
   if (missingEnv.length) {
     throw new Error(`Missing local database environment variables: ${missingEnv.join(', ')}`);
@@ -25,11 +24,11 @@ if (process.env.DATABASE_URL) {
 
   console.log('🗄️ Configurando pool de conexões MySQL via variáveis de ambiente locais...');
   pool = mysql.createPool({
-    host: process.env.MYSQLHOST,
-    user: process.env.MYSQLUSER,
-    password: process.env.MYSQLPASSWORD,
-    database: process.env.MYSQLDATABASE,
-    port: process.env.MYSQLPORT,
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: Number(process.env.DB_PORT),
     waitForConnections: true,
     connectionLimit: 15,
     queueLimit: 0,
