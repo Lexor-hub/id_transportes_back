@@ -522,6 +522,29 @@ app.delete('/api/users/:id', authorize(['ADMIN', 'MASTER']), async (req, res) =>
     res.status(400).json({ error: err.message });
   }
 });
+
+/**
+ * @swagger
+ * /api/companies:
+ *   get:
+ *     summary: Lista todas as empresas (para gerenciamento)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de empresas
+ */
+app.get('/api/companies', authorize(['MASTER']), async (req, res) => {
+  try {
+    const [companies] = await pool.query(
+      'SELECT id, name, domain, cnpj, is_active, subscription_plan, created_at FROM companies ORDER BY name ASC'
+    );
+    res.json({ success: true, data: companies });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 if (require.main === module) {
   ensureUserColumnsPromise
     .then(() => {
