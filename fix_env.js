@@ -2,11 +2,11 @@ const fs = require('fs');
 const path = require('path');
 
 // Conteúdo correto do arquivo .env fornecido pelo usuário
-const envContent = `DB_HOST=207.180.252.4
-DB_NAME=id_transportes
-DB_USER=glaubermag
-DB_PASSWORD=C@C3te12
-DB_PORT=3306
+const envContent = `DB_HOST=
+DB_NAME=
+DB_USER=
+DB_PASSWORD=
+DB_PORT=
 JWT_SECRET=fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a`;
 
 // Caminho do arquivo .env

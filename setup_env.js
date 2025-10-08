@@ -3,11 +3,11 @@ const path = require('path');
 
 // Conteúdo do arquivo .env
 const envContent = `# Configurações do Banco de Dados
-DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=
-DB_NAME=id_transportes
-DB_PORT=3306
+DB_HOST=${{ MYSQLHOST }}
+DB_USER=${{ MYSQLUSER }}
+DB_PASSWORD=${{ MYSQLPASSWORD }}
+DB_NAME=${{ MYSQLDATABASE }}
+DB_PORT=${{ MYSQLPORT }}
 
 # JWT Secret para autenticação
 JWT_SECRET=id_transportes_secret_key_2024
