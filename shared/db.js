@@ -1,45 +1,41 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-let pool;
+const poolConfig = {
+  waitForConnections: true,
+  connectionLimit: 15,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  // 🔧 Opções adicionais para estabilidade
+  multipleStatements: false,
+  dateStrings: true, // Garante que datas sejam retornadas como strings
+};
 
 // 🔧 Lógica aprimorada para suportar Railway (DATABASE_URL) e desenvolvimento local
 if (process.env.DATABASE_URL) {
-  console.log('🗄️ Configurando pool de conexões MySQL via DATABASE_URL (Railway)...');
-  pool = mysql.createPool({
-    uri: process.env.DATABASE_URL, // Usa a URL de conexão completa
-    waitForConnections: true,
-    connectionLimit: 15,
-    queueLimit: 0,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0,
-  });
+  console.log('✅ Detectado ambiente de produção (Railway). Usando DATABASE_URL.');
+  poolConfig.uri = process.env.DATABASE_URL;
 } else {
-  // Fallback para variáveis de ambiente separadas (ambiente de desenvolvimento)
+  console.log('✅ Detectado ambiente de desenvolvimento. Usando variáveis do .env.');
   const requiredEnv = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
   const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+
   if (missingEnv.length) {
-    throw new Error(`Missing local database environment variables: ${missingEnv.join(', ')}`);
+    console.error('❌ Erro: Variáveis de ambiente locais ausentes:', missingEnv.join(', '));
+    throw new Error(`Variáveis de ambiente locais ausentes: ${missingEnv.join(', ')}`);
   }
 
-  console.log('🗄️ Configurando pool de conexões MySQL via variáveis de ambiente locais...');
-  pool = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    port: Number(process.env.DB_PORT),
-    waitForConnections: true,
-    connectionLimit: 15,
-    queueLimit: 0,
-    // 🔧 'acquireTimeout' é inválido para o pool. A biblioteca mysql2 lida com isso internamente.
-    // Removendo 'acquireTimeout' e 'idleTimeout' que são para conexões individuais, não para o pool.
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0,
-    multipleStatements: false,
-    dateStrings: false
-  });
+  poolConfig.host = process.env.DB_HOST;
+  poolConfig.user = process.env.DB_USER;
+  poolConfig.password = process.env.DB_PASSWORD;
+  poolConfig.database = process.env.DB_NAME;
+  poolConfig.port = Number(process.env.DB_PORT);
 }
+
+console.log('🗄️  Configurando pool de conexões MySQL...');
+
+const pool = mysql.createPool(poolConfig);
 
 // 🔧 TRATAMENTO DE ERROS E RECONEXÃO AUTOMÁTICA
 // Adicionar listeners para eventos do pool
