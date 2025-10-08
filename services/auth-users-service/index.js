@@ -199,6 +199,33 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+/**
+ * @swagger
+ * /api/auth/companies:
+ *   get:
+ *     summary: Lista as empresas associadas a um usuário
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de empresas
+ *       401:
+ *         description: Token inválido ou não fornecido
+ */
+app.get('/api/auth/companies', authorize(), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [companies] = await pool.query(
+      'SELECT c.id, c.name, c.domain, c.logo_url FROM companies c JOIN user_companies uc ON c.id = uc.company_id WHERE uc.user_id = ? AND c.is_active = 1',
+      [userId]
+    );
+    res.json({ success: true, data: companies });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Listar usuÃ¡rios (apenas ADMIN e MASTER)
 app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
   try {
