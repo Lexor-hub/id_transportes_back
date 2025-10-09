@@ -2,7 +2,6 @@
 const express = require('express');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
-const cors = require('cors');
 const bcrypt = require('bcryptjs');
 
 const app = express();
@@ -11,6 +10,7 @@ app.use(express.json());
 const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
 
 // CORREÇÃO: Adiciona a porta 5173 (do Vite) à lista de origens permitidas
+// Lista de origens permitidas locais e configuráveis via ambiente
 const defaultOrigins = [
   'http://localhost:8080',
   'http://localhost:5173',
@@ -21,32 +21,43 @@ const defaultOrigins = [
 
 const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
   .split(',')
-  .map(origin => origin.trim())
+  .map((origin) => origin.trim())
   .filter(Boolean);
 
-const allowedOrigins = [
-  ...defaultOrigins,
-  ...envOrigins,
-  /https:\/\/idtransportes-.*\.vercel\.app$/,
-];
+const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
+const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
 
-app.use(cors({
-  origin(origin, callback) {
-    const isAllowed = !origin || allowedOrigins.some(pattern =>
-      (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin)
-    );
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOriginSet.has(origin)) return true;
+  return vercelOriginPattern.test(origin);
+}
 
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      console.error(`CORS Error: Origin '${origin}' not allowed.`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-}));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = isOriginAllowed(origin);
 
-app.options('*', cors());
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+
+  if (allowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin && !allowed) {
+    console.error(`CORS Error: Origin '${origin}' not allowed.`);
+  }
+
+  if (req.method === 'OPTIONS') {
+    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
+  }
+
+  if (!allowed) {
+    return res.status(403).json({ success: false, error: 'CORS origin denied' });
+  }
+
+  next();
+});
 
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
@@ -340,10 +351,12 @@ app.post('/api/auth/select-company', async (req, res) => {
 // Prioriza a variável correta do .env do backend.
 const PORT = process.env.AUTH_SERVICE_PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🔧 CORS configurado para as origens: [
-  ${allowedOrigins.map(o => `'${o}'`).join(',\n  ')}
+  const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
+  console.log(`?? CORS configurado para as origens: [
+  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
 ]`);
-    console.log(`Auth Service rodando na porta ${PORT}`);
+  console.log(`Auth Service rodando na porta ${PORT}`);
 });
 
 module.exports = app;
+
