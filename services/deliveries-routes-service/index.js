@@ -141,7 +141,6 @@ const corsOptions = {
     },
     credentials: true,
 };
-app.options('*', cors(corsOptions)); // Handle preflight requests
 app.use(cors(corsOptions)); // Handle actual requests
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
