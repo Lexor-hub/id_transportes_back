@@ -407,8 +407,8 @@ app.post('/api/users', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req,
   const hash = await bcrypt.hash(password, 10);
   try {
     const [result] = await pool.query(
-      'INSERT INTO users (company_id, username, password_hash, email, full_name, user_type, cpf, status, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [targetCompanyId, username, hash, email, full_name, user_type, sanitizedCpf, normalizedStatus, isActiveFlag]
+      'INSERT INTO users (username, password_hash, email, full_name, user_type, company_id, cpf, status, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [username, hash, email, full_name, user_type, targetCompanyId, sanitizedCpf, normalizedStatus, isActiveFlag]
     );
     const insertId = result && result.insertId ? result.insertId : null;
     // Return the created user's id to help clients create related records (e.g. drivers)
