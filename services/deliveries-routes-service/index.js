@@ -125,24 +125,50 @@ app.use(express.json());
 
 // ✅ Standardized CORS Configuration
 const cors = require('cors');
-const whitelist = [
-    'http://localhost:8080',
-    'http://localhost:5173',
-    'http://localhost:8081',
-    /https:\/\/idtransportes-.*\.vercel\.app$/, // Allows all Vercel preview and production domains
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
 ];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
+];
+
+const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
+
 const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    if (whitelist.some((pattern) => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
+      return callback(null, true);
+    }
+
+    console.error(`[Deliveries CORS] Origin '${origin}' not allowed.`);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
 };
-app.options('*', cors(corsOptions)); // Handle preflight requests
-app.use(cors(corsOptions)); // Handle actual requests
+
+app.use(cors(corsOptions));
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 const frontendURL = process.env.FRONTEND_URL || 'http://localhost:5173';
