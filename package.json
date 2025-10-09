@@ -1,48 +1,49 @@
-{
-  "name": "backend-id-transportes",
-  "private": true,
-  "workspaces": [
-    "services/*",
-    "shared"
-  ],
-  "scripts": {
-    "start:auth": "node services/auth-users-service/index.js",
-    "start:auth-service": "node services/auth-service/index.js",
-    "start:drivers": "node services/drivers-vehicles-service/index.js",
-    "start:deliveries": "node services/deliveries-routes-service/index.js", 
-    "start:receipts": "node services/receipts-ocr-service/index.js",
-    "start:tracking": "node services/tracking-service/index.js",
-    "start:reports": "node services/reports-service/index.js",
-    "start:companies": "node services/companies-service/index.js",
-    "dev": "concurrently -k -n AUTH,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES \"PORT=3001 node services/auth-users-service/index.js\" \"PORT=3002 node services/drivers-vehicles-service/index.js\" \"PORT=3003 node services/deliveries-routes-service/index.js\" \"PORT=3004 node services/receipts-ocr-service/index.js\" \"PORT=3005 node services/tracking-service/index.js\" \"PORT=3006 node services/reports-service/index.js\" \"PORT=3007 node services/companies-service/index.js\"",
-    "test": "jest"
-  },
-  "dependencies": {
-    "@google-cloud/documentai": "^9.4.0",
-    "@google-cloud/storage": "^7.17.1",
-    "@google-cloud/vision": "^5.3.3",
-    "axios": "^1.11.0",
-    "bcrypt": "^6.0.0",
-    "bcryptjs": "^3.0.2",
-    "concurrently": "^9.2.0",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "form-data": "^4.0.4",
-    "jsonwebtoken": "^9.0.2",
-    "mammoth": "^1.8.0",
-    "multer": "^2.0.2",
-    "mysql2": "^3.14.2",
-    "node-fetch": "^2.7.0",
-    "pdf-parse": "^1.1.1",
-    "swagger-jsdoc": "^6.2.8",
-    "swagger-ui-express": "^5.0.1",
-    "tesseract.js": "^6.0.1",
-    "ws": "^8.18.3",
-    "xml2js": "^0.6.2"
-  },
-  "devDependencies": {
-    "jest": "^29.7.0",
-    "supertest": "^7.1.4"
-  }
+﻿{
+    "name":  "backend-id-transportes",
+    "private":  true,
+    "workspaces":  [
+                       "services/*",
+                       "shared"
+                   ],
+    "scripts":  {
+                    "start:auth":  "node services/auth-users-service/index.js",
+                    "start:auth-service":  "node services/auth-service/index.js",
+                    "start:drivers":  "node services/drivers-vehicles-service/index.js",
+                    "start:deliveries":  "node services/deliveries-routes-service/index.js",
+                    "start:receipts":  "node services/receipts-ocr-service/index.js",
+                    "start:tracking":  "node services/tracking-service/index.js",
+                    "start:reports":  "node services/reports-service/index.js",
+                    "start:companies":  "node services/companies-service/index.js",
+                    "dev":  "concurrently -k -n AUTH,AUTH_USERS,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES \"cross-env AUTH_SERVICE_PORT=3001 node services/auth-service/index.js\" \"cross-env AUTH_USERS_SERVICE_PORT=3008 node services/auth-users-service/index.js\" \"cross-env PORT=3002 node services/drivers-vehicles-service/index.js\" \"cross-env PORT=3003 node services/deliveries-routes-service/index.js\" \"cross-env RECEIPTS_SERVICE_PORT=3004 node services/receipts-ocr-service/index.js\" \"node services/tracking-service/index.js\" \"cross-env REPORTS_SERVICE_PORT=3006 node services/reports-service/index.js\" \"cross-env PORT=3007 node services/companies-service/index.js\"",
+                    "test":  "jest"
+                },
+    "dependencies":  {
+                         "@google-cloud/documentai":  "^9.4.0",
+                         "@google-cloud/storage":  "^7.17.1",
+                         "@google-cloud/vision":  "^5.3.3",
+                         "axios":  "^1.11.0",
+                         "bcrypt":  "^6.0.0",
+                         "bcryptjs":  "^3.0.2",
+                         "concurrently":  "^9.2.0",
+                         "cors":  "^2.8.5",
+                         "dotenv":  "^17.2.1",
+                         "express":  "^5.1.0",
+                         "form-data":  "^4.0.4",
+                         "jsonwebtoken":  "^9.0.2",
+                         "mammoth":  "^1.8.0",
+                         "multer":  "^2.0.2",
+                         "mysql2":  "^3.14.2",
+                         "node-fetch":  "^2.7.0",
+                         "pdf-parse":  "^1.1.1",
+                         "swagger-jsdoc":  "^6.2.8",
+                         "swagger-ui-express":  "^5.0.1",
+                         "tesseract.js":  "^6.0.1",
+                         "ws":  "^8.18.3",
+                         "xml2js":  "^0.6.2"
+                     },
+    "devDependencies":  {
+                            "jest":  "^29.7.0",
+                            "supertest":  "^7.1.4",
+                            "cross-env":  "^7.0.3"
+                        }
 }
