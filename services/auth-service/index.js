@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+﻿require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
 const express = require('express');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
@@ -11,21 +11,42 @@ app.use(express.json());
 const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
 
 // CORREÇÃO: Adiciona a porta 5173 (do Vite) à lista de origens permitidas
-const allowedOrigins = ['http://localhost:8080', 'http://localhost:5173', 'http://localhost:8081', 'http://127.0.0.1:8080', 'http://127.0.0.1:8081'];
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
+];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [
+  ...defaultOrigins,
+  ...envOrigins,
+  /https:\/\/idtransportes-.*\.vercel\.app$/,
+];
 
 app.use(cors({
-  origin: function (origin, callback) {
-    // Permite requisições sem 'origin' (ex: Postman, apps mobile) ou da lista de permitidos
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+  origin(origin, callback) {
+    const isAllowed = !origin || allowedOrigins.some(pattern =>
+      (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin)
+    );
+
+    if (isAllowed) {
       callback(null, true);
     } else {
       console.error(`CORS Error: Origin '${origin}' not allowed.`);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
 }));
 
+app.options('*', cors());
 
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
