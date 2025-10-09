@@ -407,7 +407,7 @@ app.put('/api/users/:id/password', authorize(), async (req, res) => {
   }
 });
 // Detalhes de usuÃ¡rio
-app.get('/api/users/:id', authorize(), async (req, res) => {
+app.get('/api/users/:id', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
