@@ -3,11 +3,12 @@ const pool = require('../../shared/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const path = require('path');
+const cors = require('cors');
 require('dotenv').config();
-// Debug: verificar se JWT_SECRET estÃ¡ carregado
-console.log('ðŸ” Debug - JWT_SECRET:', process.env.JWT_SECRET ? 'DEFINIDO' : 'NÃƒO DEFINIDO');
+// Debug: verificar se JWT_SECRET está carregado
+console.log('🔑 Debug - JWT_SECRET:', process.env.JWT_SECRET ? 'DEFINIDO' : 'NÃO DEFINIDO');
 if (process.env.JWT_SECRET) {
-  console.log('ðŸ” Debug - JWT_SECRET (primeiros 10 chars):', process.env.JWT_SECRET.substring(0, 10) + '...');
+  console.log('🔑 Debug - JWT_SECRET (primeiros 10 chars):', process.env.JWT_SECRET.substring(0, 10) + '...');
 }
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
@@ -16,7 +17,7 @@ const swaggerDefinition = {
   info: {
     title: 'API Auth/Users',
     version: '1.0.0',
-    description: 'DocumentaÃ§Ã£o da API de autenticaÃ§Ã£o e usuÃ¡rios'
+    description: 'Documentação da API de autenticação e usuários'
   }
 };
 const options = {
@@ -25,29 +26,42 @@ const options = {
 };
 const swaggerSpec = swaggerJsdoc(options);
 const app = express();
-// ✅ Prioriza a variável PORT (usada pelo Railway e pelo script dev), com fallback para 3001.
-const AUTH_USERS_PORT = Number(process.env.AUTH_USERS_SERVICE_PORT || process.env.AUTH_USERS_PORT || process.env.PORT || 3001);
+const AUTH_USERS_PORT = Number(
+  process.env.NODE_ENV === 'production'
+    ? (process.env.PORT || 3001) // Em produção (Railway), usa a porta do ambiente.
+    : (process.env.AUTH_USERS_SERVICE_PORT || process.env.AUTH_USERS_PORT || 3001) // Localmente, usa a porta específica.
+);
+
+const runWithRetry = async (sql, params = []) => {
+  if (typeof pool.executeWithRetry === 'function') {
+    const [rows] = await pool.executeWithRetry(sql, params);
+    return rows;
+  }
+  const [rows] = await pool.query(sql, params);
+  return rows;
+};
 async function ensureUserTableColumns() {
   try {
-    const [cpfColumn] = await pool.query("SHOW COLUMNS FROM users LIKE 'cpf'");
-    if (!cpfColumn.length) {
-      await pool.query("ALTER TABLE users ADD COLUMN cpf VARCHAR(14) NULL AFTER full_name");
-      console.log('ðŸ› ï¸ Coluna cpf adicionada Ã  tabela users');
+    const cpfColumn = await runWithRetry("SHOW COLUMNS FROM users LIKE 'cpf'");
+    if (!Array.isArray(cpfColumn) || !cpfColumn.length) {
+      await runWithRetry("ALTER TABLE users ADD COLUMN cpf VARCHAR(14) NULL AFTER full_name");
+      console.log('🛠️ Coluna cpf adicionada à tabela users');
     }
-    const [statusColumn] = await pool.query("SHOW COLUMNS FROM users LIKE 'status'");
-    if (!statusColumn.length) {
-      await pool.query("ALTER TABLE users ADD COLUMN status ENUM('ATIVO','INATIVO') NOT NULL DEFAULT 'ATIVO' AFTER user_type");
-      await pool.query("UPDATE users SET status = CASE WHEN is_active = 1 THEN 'ATIVO' ELSE 'INATIVO' END");
-      console.log('ðŸ› ï¸ Coluna status adicionada Ã  tabela users');
+    const statusColumn = await runWithRetry("SHOW COLUMNS FROM users LIKE 'status'");
+    if (!Array.isArray(statusColumn) || !statusColumn.length) {
+      await runWithRetry("ALTER TABLE users ADD COLUMN status ENUM('ATIVO','INATIVO') NOT NULL DEFAULT 'ATIVO' AFTER user_type");
+      await runWithRetry("UPDATE users SET status = CASE WHEN is_active = 1 THEN 'ATIVO' ELSE 'INATIVO' END");
+      console.log('🛠️ Coluna status adicionada à tabela users');
     }
   } catch (error) {
     console.error('Erro ao garantir colunas da tabela users:', error);
     throw error;
   }
 }
-const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
+const ensureUserColumnsPromise = ensureUserTableColumns().catch(error => {
   console.error('Falha ao preparar colunas da tabela users:', error);
-  throw error;
+  console.error('Prosseguindo sem alterações automáticas de schema. Verifique a base de dados.');
+  return false;
 });
 app.use(express.json());
 
@@ -60,45 +74,34 @@ const defaultOrigins = [
   'http://127.0.0.1:8081',
 ];
 
-const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+];
 
-const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
-const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
+const whitelist = [...defaultOrigins, ...allowedOriginPatterns];
 
-function isOriginAllowed(origin) {
-  if (!origin) return true;
-  if (allowedOriginSet.has(origin)) return true;
-  return vercelOriginPattern.test(origin);
-}
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Permite requisições sem 'origin' (ex: Postman, apps mobile)
+    if (!origin) return callback(null, true);
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowed = isOriginAllowed(origin);
+    // Verifica se a origem está na lista de permissões (strings exatas ou regex)
+    const isAllowed = whitelist.some(pattern =>
+      (pattern instanceof RegExp) ? pattern.test(origin) : pattern === origin
+    );
 
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.error(`[Auth-Users CORS] Origin '${origin}' not allowed.`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+};
 
-  if (allowed && origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
-  } else if (origin && !allowed) {
-    console.error(`CORS Error: Origin '${origin}' not allowed.`);
-  }
-
-  if (req.method === 'OPTIONS') {
-    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
-  }
-
-  if (!allowed) {
-    return res.status(403).json({ success: false, error: 'CORS origin denied' });
-  }
-
-  next();
-});
+app.use(cors(corsOptions));
 
 
 // Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
@@ -113,7 +116,7 @@ app.get('/_health', (req, res) => {
 /**
  * @swagger
  * /api/auth/login:
- *   post:
+ *   post: // Corrigido
  *     summary: Login de usuÃ¡rio
  *     requestBody:
  *       required: true
@@ -139,7 +142,7 @@ app.post('/api/auth/login', async (req, res) => {
     if (company_domain) {
       const [companyRows] = await pool.query('SELECT id FROM companies WHERE domain = ? AND is_active = 1', [company_domain]);
       if (companyRows.length === 0) {
-        return res.status(401).json({ error: 'Empresa nÃ£o encontrada ou inativa' });
+        return res.status(401).json({ error: 'Empresa não encontrada ou inativa' });
       }
       companyId = companyRows[0].id;
     }
@@ -152,15 +155,15 @@ app.post('/api/auth/login', async (req, res) => {
     }
     const [rows] = await pool.query(query, params);
     const user = rows[0];
-    if (!user) return res.status(401).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
+    if (!user) return res.status(401).json({ error: 'Usuário não encontrado' });
     if (!user.is_active) return res.status(401).json({ error: 'UsuÃ¡rio inativo' });
     const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) return res.status(401).json({ error: 'Senha invÃ¡lida' });
+    if (!valid) return res.status(401).json({ error: 'Senha inválida' });
     // Atualizar Ãºltimo login
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
     // Debug: verificar JWT_SECRET antes de gerar token
-    console.log('ðŸ” Debug - Gerando token para usuÃ¡rio:', user.username);
-    console.log('ðŸ” Debug - JWT_SECRET disponÃ­vel:', !!process.env.JWT_SECRET);
+    console.log('🔑 Debug - Gerando token para usuário:', user.username);
+    console.log('🔑 Debug - JWT_SECRET disponível:', !!process.env.JWT_SECRET);
     const token = jwt.sign({ 
       id: user.id, 
       user_type: user.user_type, 
@@ -186,11 +189,11 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Middleware de autenticaÃ§Ã£o e autorizaÃ§Ã£o
+// Middleware de autenticação e autorização
 function authorize(roles = []) {
   return (req, res, next) => {
     const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'Token nÃ£o fornecido' });
+    if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
     const token = auth.split(' ')[1];
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -200,7 +203,7 @@ function authorize(roles = []) {
       req.user = decoded;
       next();
     } catch (err) {
-      res.status(401).json({ error: 'Token invÃ¡lido' });
+      res.status(401).json({ error: 'Token inválido' });
     }
   };
 }
@@ -217,13 +220,13 @@ function checkCompanyAccess() {
     next();
   };
 }
-// RecuperaÃ§Ã£o de senha (simulado)
+// Recuperação de senha (simulado)
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { username } = req.body;
   try {
     const [rows] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
-    if (rows.length === 0) return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
-    // Aqui vocÃª geraria um token e enviaria por e-mail
+    if (rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
+    // Aqui você geraria um token e enviaria por e-mail
     // Exemplo: const token = crypto.randomBytes(20).toString('hex');
     res.json({ message: 'InstruÃ§Ãµes de recuperaÃ§Ã£o enviadas (simulado)' });
   } catch (err) {
@@ -337,7 +340,7 @@ app.post('/api/auth/select-company', authorize(), async (req, res) => {
   }
 });
 
-// Listar usuÃ¡rios (apenas ADMIN e MASTER)
+// Listar usuários (apenas ADMIN e MASTER)
 app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
   try {
     let query = `
@@ -349,17 +352,17 @@ app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
     `;
     let params = [];
     let whereConditions = [];
-    // Se nÃ£o for MASTER, filtrar apenas usuÃ¡rios da empresa
+    // Se não for MASTER, filtrar apenas usuários da empresa
     if (req.user.user_type !== 'MASTER') {
       whereConditions.push('u.company_id = ?');
       params.push(req.user.company_id);
     }
-    // ðŸ”’ PROTEÃ‡ÃƒO: Ocultar usuÃ¡rio master para usuÃ¡rios nÃ£o-master
-    // Apenas usuÃ¡rios MASTER podem ver outros usuÃ¡rios MASTER
+    // 🔒 PROTEÇÃO: Ocultar usuário master para usuários não-master
+    // Apenas usuários MASTER podem ver outros usuários MASTER
     if (req.user.user_type !== 'MASTER') {
       whereConditions.push("u.user_type != 'MASTER'");
     }
-    // Adicionar condiÃ§Ãµes WHERE se existirem
+    // Adicionar condições WHERE se existirem
     if (whereConditions.length > 0) {
       query += ' WHERE ' + whereConditions.join(' AND ');
     }
@@ -370,10 +373,10 @@ app.get('/api/users', authorize(['ADMIN', 'MASTER']), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Cadastro de usuÃ¡rio (apenas ADMIN e MASTER)
+// Cadastro de usuário (apenas ADMIN e MASTER)
 app.post('/api/users', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req, res) => {
   const { username, password, email, full_name, user_type, company_id, cpf, status } = req.body;
-  // ðŸ”’ VALIDAÃ‡ÃƒO DE PERMISSÃ•ES: Verificar se o usuÃ¡rio pode criar o tipo solicitado
+  // 🔒 VALIDAÇÃO DE PERMISSÕES: Verificar se o usuário pode criar o tipo solicitado
   const allowedUserTypes = {
     'MASTER': ['ADMIN', 'SUPERVISOR', 'OPERATOR', 'DRIVER', 'CLIENT'], // Master pode criar qualquer tipo
     'ADMIN': ['SUPERVISOR', 'OPERATOR', 'DRIVER', 'CLIENT'], // Admin nÃ£o pode criar MASTER nem ADMIN
@@ -382,7 +385,7 @@ app.post('/api/users', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req,
   const userAllowedTypes = allowedUserTypes[req.user.user_type] || [];
   if (!userAllowedTypes.includes(user_type)) {
     return res.status(403).json({ 
-      error: `VocÃª nÃ£o tem permissÃ£o para criar usuÃ¡rios do tipo ${user_type}. Tipos permitidos: ${userAllowedTypes.join(', ')}` 
+      error: `Você não tem permissão para criar usuários do tipo ${user_type}. Tipos permitidos: ${userAllowedTypes.join(', ')}` 
     });
   }
   // Determinar company_id
@@ -391,17 +394,17 @@ app.post('/api/users', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req,
     targetCompanyId = req.user.company_id;
   }
   if (!targetCompanyId) {
-    return res.status(400).json({ error: 'Company ID Ã© obrigatÃ³rio' });
+    return res.status(400).json({ error: 'Company ID é obrigatório' });
   }
-  // ValidaÃ§Ã£o de senha forte
+  // Validação de senha forte
   if (!password || password.length < 8 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
-    return res.status(400).json({ error: 'A senha deve ter pelo menos 8 caracteres, incluindo maiÃºscula, minÃºscula e nÃºmero.' });
+    return res.status(400).json({ error: 'A senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula e número.' });
   }
   const normalizedStatus = typeof status === 'string' && status.trim().toUpperCase() === 'INATIVO' ? 'INATIVO' : 'ATIVO';
   const isActiveFlag = normalizedStatus === 'ATIVO';
   const sanitizedCpfDigits = cpf ? cpf.toString().replace(/\D/g, '').slice(0, 14) : '';
   const sanitizedCpf = sanitizedCpfDigits ? sanitizedCpfDigits : null;
-  // ValidaÃ§Ã£o de username Ãºnico por empresa
+  // Validação de username único por empresa
   const [exists] = await pool.query('SELECT id FROM users WHERE username = ? AND company_id = ?', [username, targetCompanyId]);
   if (exists.length > 0) return res.status(400).json({ error: 'Username jÃ¡ cadastrado nesta empresa' });
   const hash = await bcrypt.hash(password, 10);
@@ -421,11 +424,11 @@ app.post('/api/users', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req,
 app.put('/api/users/:id/password', authorize(), async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!newPassword || newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-    return res.status(400).json({ error: 'A nova senha deve ter pelo menos 8 caracteres, incluindo maiÃºscula, minÃºscula e nÃºmero.' });
+    return res.status(400).json({ error: 'A nova senha deve ter pelo menos 8 caracteres, incluindo maiúscula, minúscula e número.' });
   }
   try {
     const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Usuário não encontrado' });
     const user = rows[0];
     const valid = await bcrypt.compare(oldPassword, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Senha atual incorreta' });
@@ -436,14 +439,14 @@ app.put('/api/users/:id/password', authorize(), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Atualizar usuÃ¡rio
+// Atualizar usuário
 app.put('/api/users/:id', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req, res) => {
   const { email, full_name, user_type, is_active, cpf, status } = req.body;
   try {
-    // ðŸ”’ PROTEÃ‡ÃƒO: Verificar se estÃ¡ tentando editar um usuÃ¡rio MASTER
+    // 🔒 PROTEÇÃO: Verificar se está tentando editar um usuário MASTER
     const [targetUser] = await pool.query('SELECT user_type, username, is_active, status FROM users WHERE id = ?', [req.params.id]);
     if (targetUser.length === 0) {
-      return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
+      return res.status(404).json({ error: 'Usuário não encontrado' });
     }
     // Apenas usuÃ¡rios MASTER podem editar outros usuÃ¡rios MASTER
     if (targetUser[0].user_type === 'MASTER' && req.user.user_type !== 'MASTER') {
@@ -452,7 +455,7 @@ app.put('/api/users/:id', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (r
         details: 'OperaÃ§Ã£o nÃ£o permitida por questÃµes de seguranÃ§a'
       });
     }
-    // ðŸ”’ VALIDAÃ‡ÃƒO DE PERMISSÃ•ES: Verificar se o usuÃ¡rio pode alterar para o tipo solicitado
+    // 🔒 VALIDAÇÃO DE PERMISSÕES: Verificar se o usuário pode alterar para o tipo solicitado
     if (user_type && user_type !== targetUser[0].user_type) {
       const allowedUserTypes = {
         'MASTER': ['ADMIN', 'SUPERVISOR', 'OPERATOR', 'DRIVER', 'CLIENT'], // Master pode alterar para qualquer tipo
@@ -462,15 +465,15 @@ app.put('/api/users/:id', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (r
       const userAllowedTypes = allowedUserTypes[req.user.user_type] || [];
       if (!userAllowedTypes.includes(user_type)) {
         return res.status(403).json({ 
-          error: `VocÃª nÃ£o tem permissÃ£o para alterar usuÃ¡rios para o tipo ${user_type}. Tipos permitidos: ${userAllowedTypes.join(', ')}` 
+          error: `Você não tem permissão para alterar usuários para o tipo ${user_type}. Tipos permitidos: ${userAllowedTypes.join(', ')}` 
         });
       }
     }
-    // ðŸ”’ PROTEÃ‡ÃƒO: Impedir que usuÃ¡rios nÃ£o-MASTER alterem o tipo de usuÃ¡rio para MASTER
+    // 🔒 PROTEÇÃO: Impedir que usuários não-MASTER alterem o tipo de usuário para MASTER
     if (user_type === 'MASTER' && req.user.user_type !== 'MASTER') {
       return res.status(403).json({ 
-        error: 'Acesso negado: Apenas usuÃ¡rios MASTER podem criar outros usuÃ¡rios MASTER',
-        details: 'NÃ£o Ã© possÃ­vel alterar o tipo de usuÃ¡rio para MASTER'
+        error: 'Acesso negado: Apenas usuários MASTER podem criar outros usuários MASTER',
+        details: 'Não é possível alterar o tipo de usuário para MASTER'
       });
     }
     const currentTarget = targetUser[0];
@@ -511,18 +514,18 @@ app.put('/api/users/:id', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (r
       'UPDATE users SET email=?, full_name=?, user_type=?, cpf=?, status=?, is_active=? WHERE id=?',
       [email, full_name, user_type, sanitizedCpf, normalizedStatus, isActiveFlag, req.params.id]
     );
-    res.json({ message: 'UsuÃ¡rio atualizado com sucesso' });
+    res.json({ message: 'Usuário atualizado com sucesso' });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
-// Excluir usuÃ¡rio permanentemente
+// Excluir usuário permanentemente
 app.delete('/api/users/:id', authorize(['ADMIN', 'MASTER']), async (req, res) => {
   try {
-    // ðŸ”’ PROTEÃ‡ÃƒO: Verificar se estÃ¡ tentando deletar um usuÃ¡rio MASTER
+    // 🔒 PROTEÇÃO: Verificar se está tentando deletar um usuário MASTER
     const [targetUser] = await pool.query('SELECT user_type, username, is_active, status FROM users WHERE id = ?', [req.params.id]);
     if (targetUser.length === 0) {
-      return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
+      return res.status(404).json({ error: 'Usuário não encontrado' });
     }
     // Apenas usuÃ¡rios MASTER podem deletar outros usuÃ¡rios MASTER
     if (targetUser[0].user_type === 'MASTER' && req.user.user_type !== 'MASTER') {
@@ -531,12 +534,12 @@ app.delete('/api/users/:id', authorize(['ADMIN', 'MASTER']), async (req, res) =>
         details: `OperaÃ§Ã£o nÃ£o permitida para o usuÃ¡rio: ${targetUser[0].username}`
       });
     }
-    // ðŸ”’ PROTEÃ‡ÃƒO ADICIONAL: Impedir auto-exclusÃ£o do Ãºltimo usuÃ¡rio MASTER
+    // 🔒 PROTEÇÃO ADICIONAL: Impedir auto-exclusão do último usuário MASTER
     if (targetUser[0].user_type === 'MASTER') {
       const [masterCount] = await pool.query('SELECT COUNT(*) as count FROM users WHERE user_type = "MASTER" AND is_active = 1');
       if (masterCount[0].count <= 1) {
         return res.status(403).json({ 
-          error: 'OperaÃ§Ã£o nÃ£o permitida: NÃ£o Ã© possÃ­vel deletar o Ãºltimo usuÃ¡rio MASTER do sistema',
+          error: 'Operação não permitida: Não é possível deletar o último usuário MASTER do sistema',
           details: 'Deve existir pelo menos um usuÃ¡rio MASTER ativo no sistema'
         });
       }
@@ -577,16 +580,16 @@ app.get('/api/companies', authorize(['MASTER']), async (req, res) => {
 
 if (require.main === module) {
   ensureUserColumnsPromise
-    .then(() => {
-      app.listen(AUTH_USERS_PORT, () => {
-        const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
-        console.log(`?? CORS configurado para as origens: [
-  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
-]`);
-        console.log('Auth/Users Service rodando na porta ' + AUTH_USERS_PORT);
+    .then((schemaReady) => {
+      if (!schemaReady) {
+        console.warn('Auth/Users Service iniciou sem aplicar migrações automáticas. Verifique se as colunas cpf/status existem.');
+      }
+      app.listen(AUTH_USERS_PORT, () => { // Corrigido
+        const allowedOrigins = Array.from(new Set(whitelist.map(p => p.toString())));
+        console.log(`🔒 CORS configurado para as origens: [\n  ${allowedOrigins.join(',\n  ')}\n]`);
+        console.log(`🚀 Auth/Users Service rodando na porta ${AUTH_USERS_PORT}`);
       });
-    })
-    .catch((err) => {
+    }).catch((err) => {
       console.error('Auth/Users Service nÃ£o pÃ´de iniciar devido a erro de preparaÃ§Ã£o do banco:', err);
       process.exit(1);
     });

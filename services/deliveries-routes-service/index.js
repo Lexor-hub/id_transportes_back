@@ -65,15 +65,14 @@ async function findDriverIdentifiers(id, companyId) {
     );
     if (rows.length > 0) {
       // Retorna o ID do registro e o ID do usuÃ¡rio
-      return { id: rows[0].id, user_id: rows[0].user_id }; // Retorna o ID do registro e o ID do usuário
+      return { id: rows[0].id, user_id: rows[0].user_id };
     }
-    return null; // Retorna nulo se nÃ£o encontrar um registro de motorista
+    return null; // Retorna nulo se não encontrar um registro de motorista
   } catch (error) {
     console.error('Erro ao buscar identificadores do motorista:', error);
     return null;
   }
 }
-
 const OCR_CONFIG = {
   documentAIProjectId: process.env.DOCUMENT_AI_PROJECT_ID,
   documentAILocation: process.env.DOCUMENT_AI_LOCATION || 'us',
@@ -215,7 +214,7 @@ async function uploadToGCS(file, folder = 'receipts') {
     } else if (file.path) {
       fs.createReadStream(file.path).pipe(blobStream);
     } else {
-      reject(new Error('Arquivo inválido: nem buffer nem path foram fornecidos'));
+      reject(new Error('Arquivo inválido: nem buffer nem path não foram fornecidos'));
     }
   });
 }
@@ -239,12 +238,12 @@ function extractSefazDataFromText(text) {
 
     const nfRegexes = [
       /n[Âºo]\s*(?:da\s*)?nota\s*fiscal[:\-\s]*([0-9]{1,9})/i,
-      /n[ºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eé]rie/i,
+      /n[ºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eé]rie/i, // Corrigido
       /n[Âºo]\s*nf[:\-\s]*([0-9]{1,9})/i,
       /n\.?\s*nf-?e?\s*[:\-\s]*([0-9]{1,9})/i,
       /nfe\s*n[Âºo]\.?\s*[:\-\s]*(\d{1,9})/i,
-      /nro\.?\s*(\d{1,9})\s*s[eé]rie/i,
-      /nf-e\s*s[eé]rie[:\-\s]*\d+\s*n[ºo]\.?[:\-\s]*(\d{1,9})/i
+      /nro\.?\s*(\d{1,9})\s*s[eé]rie/i, // Corrigido
+      /nf-e\s*s[eé]rie[:\-\s]*\d+\s*n[ºo]\.?[:\-\s]*(\d{1,9})/i // Corrigido
     ];
 
     let nfNumber = '';
@@ -254,8 +253,8 @@ function extractSefazDataFromText(text) {
     }
 
     const serieRegexes = [
-      /s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
-      /nf-e\s*s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
+      /s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i, // Corrigido
+      /nf-e\s*s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i // Corrigido
     ];
 
     let serie = '';
@@ -266,8 +265,8 @@ function extractSefazDataFromText(text) {
 
     const emitenteRegexes = [
       /emitente[:\-\s]*([^\n\r]{3,120})/i,
-      /raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
+      /nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i // Corrigido
     ];
 
     let xNomeEmit = '';
@@ -277,9 +276,9 @@ function extractSefazDataFromText(text) {
     }
 
     const destRegexes = [
-      /destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*do\s*destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /destinat[aá]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
+      /nome\s*do\s*destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
+      /destinat[aá]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i // Corrigido
     ];
 
     let xNomeDest = '';
@@ -304,7 +303,7 @@ function extractSefazDataFromText(text) {
     const uniq = Array.from(new Set(cnpjCpfMatches)).filter(Boolean);
 
     const enderecoRegexes = [
-      /endere[çc]o[:\-\s]*([^\n\r]{3,120})/i,
+      /endere[çc]o[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
       /logradouro[:\-\s]*([^\n\r]{3,120})/i
     ];
 
@@ -317,7 +316,7 @@ function extractSefazDataFromText(text) {
     const cepMatch = text.match(/CEP[:\-\s]*([0-9]{5}-?[0-9]{3})/i);
     const cep = cepMatch ? cepMatch[1] : '';
 
-    const municipioMatch = text.match(/munic[íi]pio[:\-\s]*([^\n\r]{3,50})/i);
+    const municipioMatch = text.match(/munic[íi]pio[:\-\s]*([^\n\r]{3,50})/i,); // Corrigido
     const municipio = municipioMatch ? clean(municipioMatch[1]) : '';
 
     const ufMatch = text.match(/UF[:\-\s]*([A-Z]{2})/i);
@@ -340,7 +339,7 @@ function extractSefazDataFromText(text) {
     const pesoBrutoMatch = text.match(/peso\s*bruto[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoBruto = pesoBrutoMatch ? pesoBrutoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
-    const pesoLiquidoMatch = text.match(/peso\s*l[íi]quido[:\-\s]*([0-9\.,]{1,10})/i);
+    const pesoLiquidoMatch = text.match(/peso\s*l[íi]quido[:\-\s]*([0-9\.,]{1,10})/i,); // Corrigido
     const pesoLiquido = pesoLiquidoMatch ? pesoLiquidoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
     let enderecoCompleto = endereco;
@@ -563,7 +562,7 @@ async function ensureInvoiceTables() {
       FOREIGN KEY (invoice_details_id) REFERENCES delivery_invoice_details(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `;
-  // Esta função agora apenas define as queries, a execução pode ser implementada se necessário.
+  // Esta função agora apenas define as queries, a execução pode ser implementada se necessário. // Corrigido
 }
 
 app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
@@ -835,7 +834,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
   } catch (error) {
     console.error('Erro ao criar entrega a partir do SEFAZ:', error);
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ success: false, error: 'Uma entrega com este número de NF-e já existe.' });
+      return res.status(409).json({ success: false, error: 'Uma entrega com este número de NF-e já existe.' }); // Corrigido
     }
     res.status(500).json({ success: false, error: error.message || 'Erro interno do servidor.' });
   }
@@ -928,15 +927,15 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
 
     const deliveryDateExpr = 'DATE(COALESCE(d.delivery_date_expected, d.created_at))';
 
-    // Se o usuário é um motorista e não há filtro de data, mostramos todas as pendentes/em andamento.
+    // Se o usuário é um motorista e não há filtro de data, mostramos todas as pendentes/em andamento. // Corrigido
     if ((user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') && !start_date && !end_date && !status) {
       query += ` AND (${deliveryDateExpr} = CURDATE() OR UPPER(d.status) IN ('PENDING', 'IN_TRANSIT', 'PENDENTE', 'EM_ANDAMENTO'))`;
     } else if (status) {
-      // Se um status é fornecido, aplica o filtro para qualquer tipo de usuário
+      // Se um status é fornecido, aplica o filtro para qualquer tipo de usuário // Corrigido
       query += ' AND d.status = ?';
       params.push(status);
     } else {
-      // Para outros usuários ou quando há filtro de data, mantém a lógica original.
+      // Para outros usuários ou quando há filtro de data, mantém a lógica original. // Corrigido
       if (start_date && end_date) {
         query += ' AND ' + deliveryDateExpr + ' >= ? AND ' + deliveryDateExpr + ' <= ?';
         params.push(start_date, end_date);
@@ -1009,8 +1008,8 @@ app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), asy
     const delivery = rows[0];
     delivery.has_receipt = Boolean(delivery.receipt_id);
 
-    // A consulta principal já busca todos os dados necessários das tabelas
-    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela não existe no schema principal.
+    // A consulta principal já busca todos os dados necessários das tabelas // Corrigido
+    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela não existe no schema principal. // Corrigido
 
     const [occurrences] = await pool.query(
       'SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY created_at DESC',
@@ -1060,13 +1059,14 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
 });
 
 if (require.main === module) {
-  const PORT = Number(process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || process.env.PORT || 3003);
+  // ✅ Prioriza a variável PORT do ambiente de produção (Railway).
+  const PORT = Number(process.env.PORT || process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || 3003);
   const allowedOrigins = Array.from(new Set(whitelist.map(p => p.toString())));
   app.listen(PORT, () => {
     console.log(`🔒 CORS configurado para as origens: [
   ${allowedOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
 ]`);
-    console.log(`Deliveries & Routes Service rodando na porta ${PORT}`);
+    console.log(`🚀 Deliveries & Routes Service rodando na porta ${PORT}`);
   });
 }
 
