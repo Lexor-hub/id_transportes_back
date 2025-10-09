@@ -316,6 +316,11 @@ app.post('/api/auth/select-company', authorize(), async (req, res) => {
     );
     const user = rows[0];
 
+    // ✅ ADICIONADO: Verificação para garantir que o usuário foi encontrado
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'Usuário não encontrado durante a geração do token final.' });
+    }
+
     // 3. Gerar o novo token JWT com o company_id final
     const finalToken = jwt.sign(
       { id: user.id, user_type: user.user_type, company_id: selectedCompanyId },
