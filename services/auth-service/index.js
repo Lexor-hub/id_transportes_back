@@ -3,13 +3,13 @@ const express = require('express');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const cors = require('cors'); // ✅ Importar o pacote cors
 
 const app = express();
 app.use(express.json());
 
 const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
 
-// CORREÇÃO: Adiciona a porta 5173 (do Vite) à lista de origens permitidas
 // Lista de origens permitidas locais e configuráveis via ambiente
 const defaultOrigins = [
   'http://localhost:8080',
@@ -19,57 +19,34 @@ const defaultOrigins = [
   'http://127.0.0.1:8081',
 ];
 
-const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
-const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
-
-const originPatterns = [
+// ✅ Lista de padrões de regex para origens dinâmicas (Vercel)
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/, // Padrão para seus deploys de preview e produção
   /^https:\/\/idtransportes-.*\.vercel\.app$/,
-  /^https:\/\/transportes-.*\.vercel\.app$/,
-  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
-  ...wildcardOrigins.map((pattern) => {
-    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*');
-    return new RegExp(`^${escaped}$`);
-  }),
 ];
 
-const allowedOriginSet = new Set([...defaultOrigins, ...explicitOrigins]);
+const whitelist = [...defaultOrigins, ...allowedOriginPatterns];
 
-function isOriginAllowed(origin) {
-  if (!origin) return true;
-  if (allowedOriginSet.has(origin)) return true;
-  return originPatterns.some((pattern) => pattern.test(origin));
-}
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Permite requisições sem 'origin' (ex: Postman, apps mobile)
+    if (!origin) return callback(null, true);
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowed = isOriginAllowed(origin);
+    // Verifica se a origem está na lista de permissões (strings exatas ou regex)
+    const isAllowed = whitelist.some(pattern => 
+      (pattern instanceof RegExp) ? pattern.test(origin) : pattern === origin
+    );
 
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Origin '${origin}' not allowed by CORS`));
+    }
+  },
+  credentials: true, // Permite o envio de cookies e headers de autorização
+};
 
-  if (allowed && origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
-  } else if (origin && !allowed) {
-    console.error(`CORS Error: Origin '${origin}' not allowed.`);
-  }
-
-  if (req.method === 'OPTIONS') {
-    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
-  }
-
-  if (!allowed) {
-    return res.status(403).json({ success: false, error: 'CORS origin denied' });
-  }
-
-  next();
-});
+app.use(cors(corsOptions)); // ✅ Usa o middleware cors com as opções definidas
 
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
@@ -363,12 +340,7 @@ app.post('/api/auth/select-company', async (req, res) => {
 // Prioriza a variável correta do .env do backend.
 const PORT = Number(process.env.AUTH_SERVICE_PORT || process.env.AUTH_PORT || process.env.PORT || 3000);
 app.listen(PORT, () => {
-  const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
-  console.log(`?? CORS configurado para as origens: [
-  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
-]`);
-  console.log(`Auth Service rodando na porta ${PORT}`);
+  console.log(`🚀 Auth Service rodando na porta ${PORT}`);
 });
 
 module.exports = app;
-
