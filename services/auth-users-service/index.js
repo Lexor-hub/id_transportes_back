@@ -406,16 +406,6 @@ app.put('/api/users/:id/password', authorize(), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// Detalhes de usuÃ¡rio
-app.get('/api/users/:id', authorize(), async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'UsuÃ¡rio nÃ£o encontrado' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 // Atualizar usuÃ¡rio
 app.put('/api/users/:id', authorize(['ADMIN', 'MASTER', 'SUPERVISOR']), async (req, res) => {
   const { email, full_name, user_type, is_active, cpf, status } = req.body;
