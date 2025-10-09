@@ -52,10 +52,6 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
 });
 app.use(express.json());
 
-// ✅ Lidando explicitamente com requisições preflight (OPTIONS)
-// Isso garante que o navegador receba a permissão de CORS antes de enviar a requisição real.
-app.options('*', cors()); 
-
 // 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
 const whitelist = [
   'http://localhost:8080',
@@ -64,17 +60,11 @@ const whitelist = [
 ];
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permite requisições sem 'origin' (ex: Postman, apps mobile) ou que estejam na whitelist.
-    // A verificação `!origin` é importante para ambientes de teste.
-    const isAllowed = !origin || whitelist.some(pattern => 
-      (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin)
-    );
-
-    if (isAllowed) {
+    // Permite requisições sem 'origin' (ex: Postman) ou que estejam na whitelist
+    if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
       callback(null, true);
     } else {
-      console.error(`❌ CORS: Acesso negado para a origem: ${origin}`);
-      callback(new Error('Origem não permitida pela política de CORS'));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
@@ -531,32 +521,6 @@ app.delete('/api/users/:id', authorize(['ADMIN', 'MASTER']), async (req, res) =>
     res.json({ message: 'UsuÃ¡rio excluÃ­do permanentemente do sistema' });
   } catch (err) {
     res.status(400).json({ error: err.message });
-  }
-});
-
-/**
- * @swagger
- * /api/companies:
- *   get:
- *     summary: Lista todas as empresas (para gerenciamento)
- *     description: Rota para gerenciamento de empresas, acessível apenas por MASTER.
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Uma lista de empresas.
- *       403:
- *         description: Acesso negado.
- */
-app.get('/api/companies', authorize(['MASTER']), async (req, res) => {
-  try {
-    const [companies] = await pool.query(
-      'SELECT id, name, domain, cnpj, is_active, subscription_plan, created_at FROM companies ORDER BY name ASC'
-    );
-    res.json({ success: true, data: companies });
-  } catch (err) {
-    console.error('Erro ao buscar empresas para gerenciamento:', err);
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 
