@@ -11,7 +11,6 @@ if (process.env.JWT_SECRET) {
 }
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
-const cors = require('cors');
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
@@ -52,29 +51,55 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
 });
 app.use(express.json());
 
-// 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
-const whitelist = [
+// Lista de origens permitidas locais e configuráveis via ambiente
+const defaultOrigins = [
   'http://localhost:8080',
   'http://localhost:5173',
-  /https:\/\/idtransportes-.*\.vercel\.app$/, // Permite todos os subdomínios de preview e produção
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
 ];
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Permite requisições sem 'origin' (ex: Postman) ou que estejam na whitelist
-    if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-};
 
-// ✅ Lidando explicitamente com requisições preflight (OPTIONS)
-// Isso garante que o navegador receba a permissão de CORS antes de enviar a requisição real.
-app.options('*', cors(corsOptions));
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-app.use(cors(corsOptions));
+const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
+const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOriginSet.has(origin)) return true;
+  return vercelOriginPattern.test(origin);
+}
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = isOriginAllowed(origin);
+
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+
+  if (allowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin && !allowed) {
+    console.error(`CORS Error: Origin '${origin}' not allowed.`);
+  }
+
+  if (req.method === 'OPTIONS') {
+    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
+  }
+
+  if (!allowed) {
+    return res.status(403).json({ success: false, error: 'CORS origin denied' });
+  }
+
+  next();
+});
+
 
 // Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
 // Isso evita que o middleware de autenticação bloqueie o acesso a eles.
@@ -548,7 +573,13 @@ app.get('/api/companies', authorize(['MASTER']), async (req, res) => {
 if (require.main === module) {
   ensureUserColumnsPromise
     .then(() => {
-      app.listen(AUTH_USERS_PORT, () => console.log('Auth/Users Service rodando na porta ' + AUTH_USERS_PORT));
+      app.listen(AUTH_USERS_PORT, () => {
+        const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
+        console.log(`?? CORS configurado para as origens: [
+  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
+]`);
+        console.log('Auth/Users Service rodando na porta ' + AUTH_USERS_PORT);
+      });
     })
     .catch((err) => {
       console.error('Auth/Users Service nÃ£o pÃ´de iniciar devido a erro de preparaÃ§Ã£o do banco:', err);
