@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -37,21 +37,21 @@ const authorize = (allowedRoles) => {
       if (allowedRoles.includes(userRole)) {
         next();
       } else {
-        res.status(403).json({ success: false, error: 'Acesso negado. Você não tem permissão para este recurso.' });
+        res.status(403).json({ success: false, error: 'Acesso negado. VocÃª nÃ£o tem permissÃ£o para este recurso.' });
       }
     } catch (error) {
-      console.error("Erro de autenticação:", error.message);
-      res.status(401).json({ success: false, error: 'Token inválido ou expirado.' });
+      console.error("Erro de autenticaÃ§Ã£o:", error.message);
+      res.status(401).json({ success: false, error: 'Token invÃ¡lido ou expirado.' });
     }
   };
 };
 
 /**
- * Busca os identificadores de um motorista (ID do registro e ID do usuário) no banco de dados.
+ * Busca os identificadores de um motorista (ID do registro e ID do usuÃ¡rio) no banco de dados.
  * Aceita tanto o ID do registro da tabela `drivers` quanto o ID da tabela `users`.
  * @param {string | number} id - O ID a ser procurado.
  * @param {string | number} companyId - O ID da empresa.
- * @returns {Promise<{id: string, user_id: string} | null>} - Um objeto com os IDs ou nulo se não encontrado.
+ * @returns {Promise<{id: string, user_id: string} | null>} - Um objeto com os IDs ou nulo se nÃ£o encontrado.
  */
 async function findDriverIdentifiers(id, companyId) {
   if (!id || !companyId) {
@@ -64,10 +64,10 @@ async function findDriverIdentifiers(id, companyId) {
       [id, id, companyId]
     );
     if (rows.length > 0) {
-      // Retorna o ID do registro e o ID do usuário
+      // Retorna o ID do registro e o ID do usuÃ¡rio
       return { id: rows[0].id, user_id: rows[0].user_id };
     }
-    return null; // Retorna nulo se não encontrar um registro de motorista
+    return null; // Retorna nulo se nÃ£o encontrar um registro de motorista
   } catch (error) {
     console.error('Erro ao buscar identificadores do motorista:', error);
     return null;
@@ -82,7 +82,7 @@ const OCR_CONFIG = {
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 
 
-// Centralizar a inicializa��o dos clientes do Google Cloud
+// Centralizar a inicializaï¿½ï¿½o dos clientes do Google Cloud
 const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
 let documentAIClient = null;
 let storage = null;
@@ -101,7 +101,7 @@ if (hasGoogleCredentials) {
     console.warn('?? Usando armazenamento local como fallback.');
   }
 } else {
-  console.warn('?? Google Cloud Storage n�o configurado. Usando armazenamento local.');
+  console.warn('?? Google Cloud Storage nï¿½o configurado. Usando armazenamento local.');
 }
 
 const swaggerDefinition = {
@@ -109,7 +109,7 @@ const swaggerDefinition = {
   info: {
     title: 'API Deliveries & Routes',
     version: '1.0.0',
-    description: 'API para gest�o de entregas, rotas e ocorr�ncias'
+    description: 'API para gestï¿½o de entregas, rotas e ocorrï¿½ncias'
   }
 };
 
@@ -123,39 +123,68 @@ const swaggerSpec = swaggerJsdoc(options);
 const app = express();
 app.use(express.json());
 
-// ✅ Standardized CORS Configuration
-const cors = require('cors');
-const whitelist = [
-    'http://localhost:8080',
-    'http://localhost:5173',
-    'http://localhost:8081',
-    /https:\/\/idtransportes-.*\.vercel\.app$/, // Allows all Vercel preview and production domains
+// Lista de origens permitidas locais e configuráveis via ambiente
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
 ];
-const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
-};
-app.use(cors(corsOptions)); // Handle actual requests
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
+const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOriginSet.has(origin)) return true;
+  return vercelOriginPattern.test(origin);
+}
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = isOriginAllowed(origin);
+
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+
+  if (allowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin && !allowed) {
+    console.error(`CORS Error: Origin '${origin}' not allowed.`);
+  }
+
+  if (req.method === 'OPTIONS') {
+    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
+  }
+
+  if (!allowed) {
+    return res.status(403).json({ success: false, error: 'CORS origin denied' });
+  }
+
+  next();
+});
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 const frontendURL = process.env.FRONTEND_URL || 'http://localhost:5173';
-// Configuração do Multer para upload de arquivos em memória
+// ConfiguraÃ§Ã£o do Multer para upload de arquivos em memÃ³ria
 const memoryUpload = multer({ storage: multer.memoryStorage() });
 
 
-// Fun��o para enviar arquivo ao Google Cloud Storage
+// Funï¿½ï¿½o para enviar arquivo ao Google Cloud Storage
 async function uploadToGCS(file, folder = 'receipts') {
   if (!file) {
-    throw new Error('Arquivo n�o fornecido para upload.');
+    throw new Error('Arquivo nï¿½o fornecido para upload.');
   }
 
-  // Se o bucket n�o estiver configurado, salva localmente
+  // Se o bucket nï¿½o estiver configurado, salva localmente
   if (!bucket) {
     const uploadDir = path.join(__dirname, `uploads/${folder}`);
     if (!fs.existsSync(uploadDir)) {
@@ -188,7 +217,7 @@ async function uploadToGCS(file, folder = 'receipts') {
     } else if (file.path) {
       fs.createReadStream(file.path).pipe(blobStream);
     } else {
-      reject(new Error('Arquivo inv�lido: nem buffer nem path foram fornecidos'));
+      reject(new Error('Arquivo invï¿½lido: nem buffer nem path foram fornecidos'));
     }
   });
 }
@@ -211,13 +240,13 @@ function extractSefazDataFromText(text) {
     if (chNFe.length > 44) chNFe = chNFe.slice(-44);
 
     const nfRegexes = [
-      /n[ºo]\s*(?:da\s*)?nota\s*fiscal[:\-\s]*([0-9]{1,9})/i,
-      /n[ºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eé]rie/i,
-      /n[ºo]\s*nf[:\-\s]*([0-9]{1,9})/i,
+      /n[Âºo]\s*(?:da\s*)?nota\s*fiscal[:\-\s]*([0-9]{1,9})/i,
+      /n[Âºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eÃ©]rie/i,
+      /n[Âºo]\s*nf[:\-\s]*([0-9]{1,9})/i,
       /n\.?\s*nf-?e?\s*[:\-\s]*([0-9]{1,9})/i,
-      /nfe\s*n[ºo]\.?\s*[:\-\s]*(\d{1,9})/i,
-      /nro\.?\s*(\d{1,9})\s*s[eé]rie/i,
-      /nf-e\s*s[eé]rie[:\-\s]*\d+\s*n[ºo]\.?[:\-\s]*(\d{1,9})/i
+      /nfe\s*n[Âºo]\.?\s*[:\-\s]*(\d{1,9})/i,
+      /nro\.?\s*(\d{1,9})\s*s[eÃ©]rie/i,
+      /nf-e\s*s[eÃ©]rie[:\-\s]*\d+\s*n[Âºo]\.?[:\-\s]*(\d{1,9})/i
     ];
 
     let nfNumber = '';
@@ -227,8 +256,8 @@ function extractSefazDataFromText(text) {
     }
 
     const serieRegexes = [
-      /s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
-      /nf-e\s*s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
+      /s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
+      /nf-e\s*s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
     ];
 
     let serie = '';
@@ -239,8 +268,8 @@ function extractSefazDataFromText(text) {
 
     const emitenteRegexes = [
       /emitente[:\-\s]*([^\n\r]{3,120})/i,
-      /raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
     ];
 
     let xNomeEmit = '';
@@ -250,9 +279,9 @@ function extractSefazDataFromText(text) {
     }
 
     const destRegexes = [
-      /destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*do\s*destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /destinat[aá]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*do\s*destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /destinat[aÃ¡]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
     ];
 
     let xNomeDest = '';
@@ -277,7 +306,7 @@ function extractSefazDataFromText(text) {
     const uniq = Array.from(new Set(cnpjCpfMatches)).filter(Boolean);
 
     const enderecoRegexes = [
-      /endere[çc]o[:\-\s]*([^\n\r]{3,120})/i,
+      /endere[Ã§c]o[:\-\s]*([^\n\r]{3,120})/i,
       /logradouro[:\-\s]*([^\n\r]{3,120})/i
     ];
 
@@ -290,7 +319,7 @@ function extractSefazDataFromText(text) {
     const cepMatch = text.match(/CEP[:\-\s]*([0-9]{5}-?[0-9]{3})/i);
     const cep = cepMatch ? cepMatch[1] : '';
 
-    const municipioMatch = text.match(/munic[íi]pio[:\-\s]*([^\n\r]{3,50})/i);
+    const municipioMatch = text.match(/munic[Ã­i]pio[:\-\s]*([^\n\r]{3,50})/i);
     const municipio = municipioMatch ? clean(municipioMatch[1]) : '';
 
     const ufMatch = text.match(/UF[:\-\s]*([A-Z]{2})/i);
@@ -313,7 +342,7 @@ function extractSefazDataFromText(text) {
     const pesoBrutoMatch = text.match(/peso\s*bruto[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoBruto = pesoBrutoMatch ? pesoBrutoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
-    const pesoLiquidoMatch = text.match(/peso\s*l[íi]quido[:\-\s]*([0-9\.,]{1,10})/i);
+    const pesoLiquidoMatch = text.match(/peso\s*l[Ã­i]quido[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoLiquido = pesoLiquidoMatch ? pesoLiquidoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
     let enderecoCompleto = endereco;
@@ -536,7 +565,7 @@ async function ensureInvoiceTables() {
       FOREIGN KEY (invoice_details_id) REFERENCES delivery_invoice_details(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `;
-  // Esta função agora apenas define as queries, a execução pode ser implementada se necessário.
+  // Esta funÃ§Ã£o agora apenas define as queries, a execuÃ§Ã£o pode ser implementada se necessÃ¡rio.
 }
 
 app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
@@ -559,7 +588,7 @@ app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), as
     `, [occurrenceId, req.user.company_id]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Ocorr�ncia n�o encontrada' });
+      return res.status(404).json({ error: 'Ocorrï¿½ncia nï¿½o encontrada' });
     }
 
     const delivery = rows[0];
@@ -570,7 +599,7 @@ app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), as
     });
 
   } catch (error) {
-    console.error('Erro ao obter ocorr�ncia:', error);
+    console.error('Erro ao obter ocorrï¿½ncia:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -585,17 +614,17 @@ app.get('/api/occurrences/:id/photo', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER'
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Ocorr�ncia n�o encontrada' });
+      return res.status(404).json({ error: 'Ocorrï¿½ncia nï¿½o encontrada' });
     }
 
     const occurrence = rows[0];
 
     if (!occurrence.photo_url) {
-      return res.status(404).json({ error: 'Foto n�o encontrada' });
+      return res.status(404).json({ error: 'Foto nï¿½o encontrada' });
     }
 
     if (!fs.existsSync(occurrence.photo_url)) {
-      return res.status(404).json({ error: 'Arquivo n�o encontrado' });
+      return res.status(404).json({ error: 'Arquivo nï¿½o encontrado' });
     }
 
     res.sendFile(path.resolve(occurrence.photo_url));
@@ -901,15 +930,15 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
 
     const deliveryDateExpr = 'DATE(COALESCE(d.delivery_date_expected, d.created_at))';
 
-    // Se o usuário é um motorista e não há filtro de data, mostramos todas as pendentes/em andamento.
+    // Se o usuÃ¡rio Ã© um motorista e nÃ£o hÃ¡ filtro de data, mostramos todas as pendentes/em andamento.
     if ((user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') && !start_date && !end_date && !status) {
       query += ` AND (${deliveryDateExpr} = CURDATE() OR UPPER(d.status) IN ('PENDING', 'IN_TRANSIT', 'PENDENTE', 'EM_ANDAMENTO'))`;
     } else if (status) {
-      // Se um status é fornecido, aplica o filtro para qualquer tipo de usuário
+      // Se um status Ã© fornecido, aplica o filtro para qualquer tipo de usuÃ¡rio
       query += ' AND d.status = ?';
       params.push(status);
     } else {
-      // Para outros usuários ou quando há filtro de data, mantém a lógica original.
+      // Para outros usuÃ¡rios ou quando hÃ¡ filtro de data, mantÃ©m a lÃ³gica original.
       if (start_date && end_date) {
         query += ' AND ' + deliveryDateExpr + ' >= ? AND ' + deliveryDateExpr + ' <= ?';
         params.push(start_date, end_date);
@@ -976,14 +1005,14 @@ app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), asy
     `, [deliveryId, req.user.company_id]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Entrega n�o encontrada' });
+      return res.status(404).json({ error: 'Entrega nï¿½o encontrada' });
     }
 
     const delivery = rows[0];
     delivery.has_receipt = Boolean(delivery.receipt_id);
 
-    // A consulta principal já busca todos os dados necessários das tabelas
-    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela não existe no schema principal.
+    // A consulta principal jÃ¡ busca todos os dados necessÃ¡rios das tabelas
+    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela nÃ£o existe no schema principal.
 
     const [occurrences] = await pool.query(
       'SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY created_at DESC',
@@ -1013,7 +1042,7 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
     );
 
     if (deliveryRows.length === 0) {
-      return res.status(404).json({ error: 'Entrega n�o encontrada' });
+      return res.status(404).json({ error: 'Entrega nï¿½o encontrada' });
     }
 
     await pool.query(
