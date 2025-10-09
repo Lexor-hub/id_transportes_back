@@ -14,7 +14,7 @@
                     "start:tracking":  "node services/tracking-service/index.js",
                     "start:reports":  "node services/reports-service/index.js",
                     "start:companies":  "node services/companies-service/index.js",
-                    "dev": "concurrently -k -n AUTH,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES \"npm:start:auth\" \"npm:start:drivers\" \"npm:start:deliveries\" \"npm:start:receipts\" \"npm:start:tracking\" \"npm:start:reports\" \"npm:start:companies\"",
+                    "dev": "concurrently -k -n AUTH,AUTH_SERVICE,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES \"npm:start:auth\" \"npm:start:auth-service\" \"npm:start:drivers\" \"npm:start:deliveries\" \"npm:start:receipts\" \"npm:start:tracking\" \"npm:start:reports\" \"npm:start:companies\"",
                     "test":  "jest"
                 },
     "dependencies":  {
