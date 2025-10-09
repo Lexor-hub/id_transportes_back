@@ -24,13 +24,25 @@ const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
-const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
+const originPatterns = [
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/[a-z0-9-]+\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
+];
+
+const allowedOriginSet = new Set([...defaultOrigins, ...explicitOrigins]);
 
 function isOriginAllowed(origin) {
   if (!origin) return true;
   if (allowedOriginSet.has(origin)) return true;
-  return vercelOriginPattern.test(origin);
+  return originPatterns.some((pattern) => pattern.test(origin));
 }
 
 app.use((req, res, next) => {
