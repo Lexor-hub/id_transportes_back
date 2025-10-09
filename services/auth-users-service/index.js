@@ -60,11 +60,17 @@ const whitelist = [
 ];
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permite requisições sem 'origin' (ex: Postman) ou que estejam na whitelist
-    if (!origin || whitelist.some(pattern => (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin))) {
+    // Permite requisições sem 'origin' (ex: Postman, apps mobile) ou que estejam na whitelist.
+    // A verificação `!origin` é importante para ambientes de teste.
+    const isAllowed = !origin || whitelist.some(pattern => 
+      (pattern instanceof RegExp ? pattern.test(origin) : pattern === origin)
+    );
+
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      console.error(`❌ CORS: Acesso negado para a origem: ${origin}`);
+      callback(new Error('Origem não permitida pela política de CORS'));
     }
   },
   credentials: true,
