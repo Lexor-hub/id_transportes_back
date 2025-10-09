@@ -349,7 +349,7 @@ app.post('/api/auth/select-company', async (req, res) => {
 
 // CORREÇÃO: Usa a porta do .env ou a porta padrão 3000.
 // Prioriza a variável correta do .env do backend.
-const PORT = process.env.AUTH_SERVICE_PORT || 3000;
+const PORT = Number(process.env.AUTH_SERVICE_PORT || process.env.AUTH_PORT || process.env.PORT || 3000);
 app.listen(PORT, () => {
   const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
   console.log(`?? CORS configurado para as origens: [

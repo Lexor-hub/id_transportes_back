@@ -498,7 +498,7 @@ app.get('/api/reports/canhotos', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), a
   }
 });
 
-const PORT = process.env.REPORTS_SERVICE_PORT || 3006;
+const PORT = Number(process.env.REPORTS_SERVICE_PORT || process.env.REPORTS_PORT || process.env.PORT || 3006);
 if (require.main === module) {
   app.listen(PORT, () => console.log(`Reports Service rodando na porta ${PORT}`));
 }

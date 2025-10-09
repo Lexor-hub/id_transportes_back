@@ -26,7 +26,7 @@ const options = {
 const swaggerSpec = swaggerJsdoc(options);
 const app = express();
 // ✅ Prioriza a variável PORT (usada pelo Railway e pelo script dev), com fallback para 3001.
-const AUTH_USERS_PORT = Number(process.env.PORT || process.env.AUTH_USERS_SERVICE_PORT || 3001);
+const AUTH_USERS_PORT = Number(process.env.AUTH_USERS_SERVICE_PORT || process.env.AUTH_USERS_PORT || process.env.PORT || 3001);
 async function ensureUserTableColumns() {
   try {
     const [cpfColumn] = await pool.query("SHOW COLUMNS FROM users LIKE 'cpf'");

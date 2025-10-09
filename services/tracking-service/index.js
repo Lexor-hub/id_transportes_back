@@ -455,7 +455,8 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
 
 
 if (require.main === module) {
-  server.listen(3005, () => console.log('Tracking Service rodando na porta 3005'));
+  const PORT = Number(process.env.TRACKING_SERVICE_PORT || process.env.TRACKING_PORT || process.env.PORT || 3005);
+  server.listen(PORT, () => console.log(`Tracking Service rodando na porta ${PORT}`));
 }
 
 module.exports = app; 

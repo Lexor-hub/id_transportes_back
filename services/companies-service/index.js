@@ -337,7 +337,7 @@ app.put('/api/companies/:id/settings', authorize(['MASTER', 'ADMIN']), async (re
 });
 
 if (require.main === module) {
-  const PORT = Number(process.env.PORT ?? 3007);
+  const PORT = Number(process.env.COMPANIES_SERVICE_PORT || process.env.COMPANIES_PORT || process.env.PORT || 3007);
   app.listen(PORT, () => console.log(`Companies Service rodando na porta ${PORT}`));
 }
 module.exports = app;

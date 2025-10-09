@@ -1014,7 +1014,7 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
 });
 
 if (require.main === module) {
-  const PORT = Number(process.env.PORT ?? 3003);
+  const PORT = Number(process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || process.env.PORT || 3003);
   app.listen(PORT, () => console.log(`Deliveries & Routes Service rodando na porta ${PORT}`));
 }
 

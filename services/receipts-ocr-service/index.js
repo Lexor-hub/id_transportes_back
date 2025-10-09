@@ -1299,7 +1299,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
 }
 
 // CORREÇÃO: Usa a porta do .env ou a porta padrão 3004.
-const PORT = process.env.RECEIPTS_SERVICE_PORT || 3004;
+const PORT = Number(process.env.RECEIPTS_SERVICE_PORT || process.env.RECEIPTS_PORT || process.env.PORT || 3004);
 app.listen(PORT, () => console.log(`Receipts OCR Service rodando na porta ${PORT}`));
 
 module.exports = app;

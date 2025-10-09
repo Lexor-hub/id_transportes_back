@@ -215,7 +215,7 @@ app.put('/api/vehicles/:id', authorize(['ADMIN', 'SUPERVISOR']), async (req, res
 });
 
 if (require.main === module) {
-  const PORT = Number(process.env.PORT ?? 3002);
+  const PORT = Number(process.env.DRIVERS_SERVICE_PORT || process.env.DRIVERS_PORT || process.env.PORT || 3002);
   app.listen(PORT, () => console.log(`Drivers/Vehicles Service rodando na porta ${PORT}`));
 }
 module.exports = app;
