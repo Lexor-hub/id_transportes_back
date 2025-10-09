@@ -1,16 +1,16 @@
-﻿require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
 const express = require('express');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const cors = require('cors'); // ✅ Importar o pacote cors
+const cors = require('cors'); // ? Importar o pacote cors
 
 const app = express();
 app.use(express.json());
 
 const jwtSecret = process.env.JWT_SECRET || "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a";
 
-// Lista de origens permitidas locais e configuráveis via ambiente
+// CORS: origens permitidas (local + ambiente)
 const defaultOrigins = [
   'http://localhost:8080',
   'http://localhost:5173',
@@ -19,20 +19,32 @@ const defaultOrigins = [
   'http://127.0.0.1:8081',
 ];
 
-// ✅ Lista de padrões de regex para origens dinâmicas (Vercel)
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
 const allowedOriginPatterns = [
-  /^https:\/\/transportes-.*\.vercel\.app$/, // Padrão para seus deploys de preview e produção
+  /^https:\/\/transportes-.*\.vercel\.app$/,
   /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
 ];
 
-const whitelist = [...defaultOrigins, ...allowedOriginPatterns];
-
+const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
 const corsOptions = {
   origin: (origin, callback) => {
-    // Permite requisições sem 'origin' (ex: Postman, apps mobile)
+    // Permite requisi��es sem 'origin' (ex: Postman, apps mobile)
     if (!origin) return callback(null, true);
 
-    // Verifica se a origem está na lista de permissões (strings exatas ou regex)
+    // Verifica se a origem est� na lista de permiss�es (strings exatas ou regex)
     const isAllowed = whitelist.some(pattern => 
       (pattern instanceof RegExp) ? pattern.test(origin) : pattern === origin
     );
@@ -43,16 +55,16 @@ const corsOptions = {
       callback(new Error(`Origin '${origin}' not allowed by CORS`));
     }
   },
-  credentials: true, // Permite o envio de cookies e headers de autorização
+  credentials: true, // Permite o envio de cookies e headers de autoriza��o
 };
 
-app.use(cors(corsOptions)); // ✅ Usa o middleware cors com as opções definidas
+app.use(cors(corsOptions)); // ? Usa o middleware cors com as op��es definidas
 
 app.post('/api/auth/login', async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-        return res.status(400).json({ success: false, error: 'Usuário e senha são obrigatórios.' });
+        return res.status(400).json({ success: false, error: 'Usu�rio e senha s�o obrigat�rios.' });
     }
 
     try {
@@ -65,7 +77,7 @@ app.post('/api/auth/login', async (req, res) => {
         );
 
         if (users.length === 0) {
-            return res.status(401).json({ success: false, error: 'Credenciais inválidas.' });
+            return res.status(401).json({ success: false, error: 'Credenciais inv�lidas.' });
         }
 
         const user = users[0];
@@ -88,7 +100,7 @@ app.post('/api/auth/login', async (req, res) => {
         const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
         if (!isPasswordValid) {
-            return res.status(401).json({ success: false, error: 'Credenciais inválidas.' });
+            return res.status(401).json({ success: false, error: 'Credenciais inv�lidas.' });
         }
 
         // Payload do token
@@ -102,7 +114,7 @@ app.post('/api/auth/login', async (req, res) => {
 
         const token = jwt.sign(tokenPayload, jwtSecret, { expiresIn: '24h' });
 
-        // Prepara os dados do usuário para a resposta
+        // Prepara os dados do usu�rio para a resposta
         const userResponse = {
             id: user.id,
             username: user.username,
@@ -133,12 +145,12 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/auth/companies', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
-        return res.status(401).json({ success: false, error: 'Token não fornecido.' });
+        return res.status(401).json({ success: false, error: 'Token n�o fornecido.' });
     }
 
     const token = authHeader.split(' ')[1];
     if (!token) {
-        return res.status(401).json({ success: false, error: 'Token inválido.' });
+        return res.status(401).json({ success: false, error: 'Token inv�lido.' });
     }
 
     let decoded;
@@ -146,7 +158,7 @@ app.get('/api/auth/companies', async (req, res) => {
         decoded = jwt.verify(token, jwtSecret);
     } catch (error) {
         console.error('Erro ao validar token:', error);
-        return res.status(401).json({ success: false, error: 'Token inválido.' });
+        return res.status(401).json({ success: false, error: 'Token inv�lido.' });
     }
 
     try {
@@ -208,12 +220,12 @@ app.get('/api/auth/companies', async (req, res) => {
 app.post('/api/auth/select-company', async (req, res) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) {
-        return res.status(401).json({ success: false, error: 'Token não fornecido.' });
+        return res.status(401).json({ success: false, error: 'Token n�o fornecido.' });
     }
 
     const token = authHeader.split(' ')[1];
     if (!token) {
-        return res.status(401).json({ success: false, error: 'Token inválido.' });
+        return res.status(401).json({ success: false, error: 'Token inv�lido.' });
     }
 
     let decoded;
@@ -221,12 +233,12 @@ app.post('/api/auth/select-company', async (req, res) => {
         decoded = jwt.verify(token, jwtSecret);
     } catch (error) {
         console.error('Erro ao validar token:', error);
-        return res.status(401).json({ success: false, error: 'Token inválido.' });
+        return res.status(401).json({ success: false, error: 'Token inv�lido.' });
     }
 
     const { company_id: companyId } = req.body || {};
     if (!companyId) {
-        return res.status(400).json({ success: false, error: 'company_id é obrigatório.' });
+        return res.status(400).json({ success: false, error: 'company_id � obrigat�rio.' });
     }
 
     try {
@@ -239,7 +251,7 @@ app.post('/api/auth/select-company', async (req, res) => {
         );
 
         if (companyRows.length === 0) {
-            return res.status(404).json({ success: false, error: 'Empresa não encontrada.' });
+            return res.status(404).json({ success: false, error: 'Empresa n�o encontrada.' });
         }
 
         const company = companyRows[0];
@@ -257,7 +269,7 @@ app.post('/api/auth/select-company', async (req, res) => {
         );
 
         if (userRows.length === 0) {
-            return res.status(404).json({ success: false, error: 'Usuário não encontrado.' });
+            return res.status(404).json({ success: false, error: 'Usu�rio n�o encontrado.' });
         }
 
         const user = userRows[0];
@@ -294,7 +306,7 @@ app.post('/api/auth/select-company', async (req, res) => {
         }
 
         if (userType !== 'MASTER' && user.company_id && String(user.company_id) !== String(company.id)) {
-            return res.status(403).json({ success: false, error: 'Usuário não tem acesso à empresa selecionada.' });
+            return res.status(403).json({ success: false, error: 'Usu�rio n�o tem acesso � empresa selecionada.' });
         }
 
         const tokenPayload = {
@@ -333,14 +345,23 @@ app.post('/api/auth/select-company', async (req, res) => {
 });
 
 
-// Adicione outras rotas de autenticação aqui se necessário...
+// Adicione outras rotas de autentica��o aqui se necess�rio...
 
 
-// CORREÇÃO: Usa a porta do .env ou a porta padrão 3000.
-// Prioriza a variável correta do .env do backend.
+// CORRE��O: Usa a porta do .env ou a porta padr�o 3000.
+// Prioriza a vari�vel correta do .env do backend.
 const PORT = Number(process.env.AUTH_SERVICE_PORT || process.env.AUTH_PORT || process.env.PORT || 3000);
 app.listen(PORT, () => {
-  console.log(`🚀 Auth Service rodando na porta ${PORT}`);
+  const summaryOrigins = [
+    ...new Set([...defaultOrigins, ...explicitOrigins]),
+    ...allowedOriginPatterns.map((pattern) => pattern.toString()),
+  ];
+
+  console.log(`?? CORS configurado para as origens: [
+  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
+]`);
+  console.log(`?? Auth Service rodando na porta ${PORT}`);
 });
 
 module.exports = app;
+
