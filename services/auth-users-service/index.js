@@ -51,55 +51,6 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
 });
 app.use(express.json());
 
-// Lista de origens permitidas locais e configuráveis via ambiente
-const defaultOrigins = [
-  'http://localhost:8080',
-  'http://localhost:5173',
-  'http://localhost:8081',
-  'http://127.0.0.1:8080',
-  'http://127.0.0.1:8081',
-];
-
-const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
-const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
-
-function isOriginAllowed(origin) {
-  if (!origin) return true;
-  if (allowedOriginSet.has(origin)) return true;
-  return vercelOriginPattern.test(origin);
-}
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  const allowed = isOriginAllowed(origin);
-
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-
-  if (allowed && origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
-  } else if (origin && !allowed) {
-    console.error(`CORS Error: Origin '${origin}' not allowed.`);
-  }
-
-  if (req.method === 'OPTIONS') {
-    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
-  }
-
-  if (!allowed) {
-    return res.status(403).json({ success: false, error: 'CORS origin denied' });
-  }
-
-  next();
-});
-
 
 // Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
 // Isso evita que o middleware de autenticação bloqueie o acesso a eles.
