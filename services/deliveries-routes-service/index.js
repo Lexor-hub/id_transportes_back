@@ -5,7 +5,6 @@ const path = require('path');
 const fs = require('fs');
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
-const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const xml2js = require('xml2js');
@@ -123,7 +122,54 @@ const swaggerSpec = swaggerJsdoc(options);
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: ['http://localhost:8080', 'http://localhost:8081'], credentials: true }));
+// Lista de origens permitidas locais e configuráveis via ambiente
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
+];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const vercelOriginPattern = /^https:\/\/idtransportes-.*\.vercel\.app$/;
+const allowedOriginSet = new Set([...defaultOrigins, ...envOrigins]);
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (allowedOriginSet.has(origin)) return true;
+  return vercelOriginPattern.test(origin);
+}
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = isOriginAllowed(origin);
+
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Requested-With');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+
+  if (allowed && origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin && !allowed) {
+    console.error(`CORS Error: Origin '${origin}' not allowed.`);
+  }
+
+  if (req.method === 'OPTIONS') {
+    return allowed ? res.sendStatus(204) : res.status(403).send('CORS origin denied');
+  }
+
+  if (!allowed) {
+    return res.status(403).json({ success: false, error: 'CORS origin denied' });
+  }
+
+  next();
+});
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 const frontendURL = process.env.FRONTEND_URL || 'http://localhost:5173';
 // Configuração do Multer para upload de arquivos em memória
@@ -1015,7 +1061,13 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
 
 if (require.main === module) {
   const PORT = Number(process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || process.env.PORT || 3003);
-  app.listen(PORT, () => console.log(`Deliveries & Routes Service rodando na porta ${PORT}`));
+  app.listen(PORT, () => {
+    const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
+    console.log(`?? CORS configurado para as origens: [
+  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
+]`);
+    console.log(`Deliveries & Routes Service rodando na porta ${PORT}`);
+  });
 }
 
 module.exports = app;
