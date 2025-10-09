@@ -14,7 +14,7 @@
                     "start:tracking":  "node services/tracking-service/index.js",
                     "start:reports":  "node services/reports-service/index.js",
                     "start:companies":  "node services/companies-service/index.js",
-                    "dev":  "concurrently -k -n AUTH,AUTH_USERS,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES \"cross-env AUTH_SERVICE_PORT=3001 node services/auth-service/index.js\" \"cross-env AUTH_USERS_SERVICE_PORT=3008 node services/auth-users-service/index.js\" \"cross-env PORT=3002 node services/drivers-vehicles-service/index.js\" \"cross-env PORT=3003 node services/deliveries-routes-service/index.js\" \"cross-env RECEIPTS_SERVICE_PORT=3004 node services/receipts-ocr-service/index.js\" \"node services/tracking-service/index.js\" \"cross-env REPORTS_SERVICE_PORT=3006 node services/reports-service/index.js\" \"cross-env PORT=3007 node services/companies-service/index.js\"",
+                    "dev": "concurrently -k -n AUTH,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES --names \"AUTH,DRIVERS,DELIVERIES,RECEIPTS,TRACKING,REPORTS,COMPANIES\" \"npm:start:auth\" \"npm:start:drivers\" \"npm:start:deliveries\" \"npm:start:receipts\" \"npm:start:tracking\" \"npm:start:reports\" \"npm:start:companies\"",
                     "test":  "jest"
                 },
     "dependencies":  {
