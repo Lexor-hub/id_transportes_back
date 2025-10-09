@@ -52,6 +52,10 @@ const ensureUserColumnsPromise = ensureUserTableColumns().catch((error) => {
 });
 app.use(express.json());
 
+// ✅ Lidando explicitamente com requisições preflight (OPTIONS)
+// Isso garante que o navegador receba a permissão de CORS antes de enviar a requisição real.
+app.options('*', cors()); 
+
 // 🔧 Configuração de CORS aprimorada para produção e desenvolvimento
 const whitelist = [
   'http://localhost:8080',
