@@ -29,7 +29,7 @@ const authorize = (allowedRoles) => {
     const token = authHeader.split(' ')[1];
 
     try {
-      const decoded = jwt.verify(token, jwtSecret);
+      const decoded = jwt.verify(token, jwtSecret, { ignoreExpiration: false });
       req.user = decoded;
 
       const userRole = decoded.user_type || decoded.role;
@@ -37,21 +37,21 @@ const authorize = (allowedRoles) => {
       if (allowedRoles.includes(userRole)) {
         next();
       } else {
-        res.status(403).json({ success: false, error: 'Acesso negado. VocÃª nÃ£o tem permissÃ£o para este recurso.' });
+        res.status(403).json({ success: false, error: 'Acesso negado. Você não tem permissão para este recurso.' });
       }
     } catch (error) {
-      console.error("Erro de autenticaÃ§Ã£o:", error.message);
-      res.status(401).json({ success: false, error: 'Token invÃ¡lido ou expirado.' });
+      console.error("Erro de autenticação:", error.message);
+      res.status(401).json({ success: false, error: 'Token inválido ou expirado.' });
     }
   };
 };
 
 /**
- * Busca os identificadores de um motorista (ID do registro e ID do usuÃ¡rio) no banco de dados.
+ * Busca os identificadores de um motorista (ID do registro e ID do usuário) no banco de dados.
  * Aceita tanto o ID do registro da tabela `drivers` quanto o ID da tabela `users`.
  * @param {string | number} id - O ID a ser procurado.
  * @param {string | number} companyId - O ID da empresa.
- * @returns {Promise<{id: string, user_id: string} | null>} - Um objeto com os IDs ou nulo se nÃ£o encontrado.
+ * @returns {Promise<{id: string, user_id: string} | null>} - Um objeto com os IDs ou nulo se não encontrado.
  */
 async function findDriverIdentifiers(id, companyId) {
   if (!id || !companyId) {
@@ -65,7 +65,7 @@ async function findDriverIdentifiers(id, companyId) {
     );
     if (rows.length > 0) {
       // Retorna o ID do registro e o ID do usuÃ¡rio
-      return { id: rows[0].id, user_id: rows[0].user_id };
+      return { id: rows[0].id, user_id: rows[0].user_id }; // Retorna o ID do registro e o ID do usuário
     }
     return null; // Retorna nulo se nÃ£o encontrar um registro de motorista
   } catch (error) {
@@ -82,7 +82,7 @@ const OCR_CONFIG = {
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 
 
-// Centralizar a inicializaï¿½ï¿½o dos clientes do Google Cloud
+// Centralizar a inicialização dos clientes do Google Cloud
 const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
 let documentAIClient = null;
 let storage = null;
@@ -94,14 +94,14 @@ if (hasGoogleCredentials) {
     storage = new Storage();
     if (process.env.GCS_BUCKET_NAME) {
       bucket = storage.bucket(process.env.GCS_BUCKET_NAME);
-      console.log('? Google Cloud Storage configurado com sucesso');
+      console.log('✅ Google Cloud Storage configurado com sucesso');
     }
   } catch (error) {
-    console.warn('?? Erro ao configurar Google Cloud Services:', error.message);
-    console.warn('?? Usando armazenamento local como fallback.');
+    console.warn('⚠️ Erro ao configurar Google Cloud Services:', error.message);
+    console.warn('⚠️ Usando armazenamento local como fallback.');
   }
 } else {
-  console.warn('?? Google Cloud Storage nï¿½o configurado. Usando armazenamento local.');
+  console.warn('⚠️ Google Cloud Storage não configurado. Usando armazenamento local.');
 }
 
 const swaggerDefinition = {
@@ -109,7 +109,7 @@ const swaggerDefinition = {
   info: {
     title: 'API Deliveries & Routes',
     version: '1.0.0',
-    description: 'API para gestï¿½o de entregas, rotas e ocorrï¿½ncias'
+    description: 'API para gestão de entregas, rotas e ocorrências'
   }
 };
 
@@ -146,17 +146,17 @@ app.use(cors(corsOptions)); // Handle actual requests
 
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 const frontendURL = process.env.FRONTEND_URL || 'http://localhost:5173';
-// ConfiguraÃ§Ã£o do Multer para upload de arquivos em memÃ³ria
+// Configuração do Multer para upload de arquivos em memória
 const memoryUpload = multer({ storage: multer.memoryStorage() });
 
 
-// Funï¿½ï¿½o para enviar arquivo ao Google Cloud Storage
+// Função para enviar arquivo ao Google Cloud Storage
 async function uploadToGCS(file, folder = 'receipts') {
   if (!file) {
-    throw new Error('Arquivo nï¿½o fornecido para upload.');
+    throw new Error('Arquivo não fornecido para upload.');
   }
 
-  // Se o bucket nï¿½o estiver configurado, salva localmente
+  // Se o bucket não estiver configurado, salva localmente
   if (!bucket) {
     const uploadDir = path.join(__dirname, `uploads/${folder}`);
     if (!fs.existsSync(uploadDir)) {
@@ -189,7 +189,7 @@ async function uploadToGCS(file, folder = 'receipts') {
     } else if (file.path) {
       fs.createReadStream(file.path).pipe(blobStream);
     } else {
-      reject(new Error('Arquivo invï¿½lido: nem buffer nem path foram fornecidos'));
+      reject(new Error('Arquivo inválido: nem buffer nem path foram fornecidos'));
     }
   });
 }
@@ -213,12 +213,12 @@ function extractSefazDataFromText(text) {
 
     const nfRegexes = [
       /n[Âºo]\s*(?:da\s*)?nota\s*fiscal[:\-\s]*([0-9]{1,9})/i,
-      /n[Âºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eÃ©]rie/i,
+      /n[ºo]\s*[:\-]?\s*(\d{1,9})\s*\/\s*s[eé]rie/i,
       /n[Âºo]\s*nf[:\-\s]*([0-9]{1,9})/i,
       /n\.?\s*nf-?e?\s*[:\-\s]*([0-9]{1,9})/i,
       /nfe\s*n[Âºo]\.?\s*[:\-\s]*(\d{1,9})/i,
-      /nro\.?\s*(\d{1,9})\s*s[eÃ©]rie/i,
-      /nf-e\s*s[eÃ©]rie[:\-\s]*\d+\s*n[Âºo]\.?[:\-\s]*(\d{1,9})/i
+      /nro\.?\s*(\d{1,9})\s*s[eé]rie/i,
+      /nf-e\s*s[eé]rie[:\-\s]*\d+\s*n[ºo]\.?[:\-\s]*(\d{1,9})/i
     ];
 
     let nfNumber = '';
@@ -228,8 +228,8 @@ function extractSefazDataFromText(text) {
     }
 
     const serieRegexes = [
-      /s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
-      /nf-e\s*s[eÃ©]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
+      /s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i,
+      /nf-e\s*s[eé]rie[:\-\s]*([0-9A-Za-z\-]{1,5})/i
     ];
 
     let serie = '';
@@ -240,8 +240,8 @@ function extractSefazDataFromText(text) {
 
     const emitenteRegexes = [
       /emitente[:\-\s]*([^\n\r]{3,120})/i,
-      /raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
     ];
 
     let xNomeEmit = '';
@@ -251,9 +251,9 @@ function extractSefazDataFromText(text) {
     }
 
     const destRegexes = [
-      /destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /nome\s*do\s*destinat[aÃ¡]rio[:\-\s]*([^\n\r]{3,120})/i,
-      /destinat[aÃ¡]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aÃ£]o\s*social[:\-\s]*([^\n\r]{3,120})/i
+      /destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /nome\s*do\s*destinat[aá]rio[:\-\s]*([^\n\r]{3,120})/i,
+      /destinat[aá]rio\s*\/\s*remetente[:\-\s]*nome\s*\/\s*raz[aã]o\s*social[:\-\s]*([^\n\r]{3,120})/i
     ];
 
     let xNomeDest = '';
@@ -278,7 +278,7 @@ function extractSefazDataFromText(text) {
     const uniq = Array.from(new Set(cnpjCpfMatches)).filter(Boolean);
 
     const enderecoRegexes = [
-      /endere[Ã§c]o[:\-\s]*([^\n\r]{3,120})/i,
+      /endere[çc]o[:\-\s]*([^\n\r]{3,120})/i,
       /logradouro[:\-\s]*([^\n\r]{3,120})/i
     ];
 
@@ -291,7 +291,7 @@ function extractSefazDataFromText(text) {
     const cepMatch = text.match(/CEP[:\-\s]*([0-9]{5}-?[0-9]{3})/i);
     const cep = cepMatch ? cepMatch[1] : '';
 
-    const municipioMatch = text.match(/munic[Ã­i]pio[:\-\s]*([^\n\r]{3,50})/i);
+    const municipioMatch = text.match(/munic[íi]pio[:\-\s]*([^\n\r]{3,50})/i);
     const municipio = municipioMatch ? clean(municipioMatch[1]) : '';
 
     const ufMatch = text.match(/UF[:\-\s]*([A-Z]{2})/i);
@@ -314,7 +314,7 @@ function extractSefazDataFromText(text) {
     const pesoBrutoMatch = text.match(/peso\s*bruto[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoBruto = pesoBrutoMatch ? pesoBrutoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
-    const pesoLiquidoMatch = text.match(/peso\s*l[Ã­i]quido[:\-\s]*([0-9\.,]{1,10})/i);
+    const pesoLiquidoMatch = text.match(/peso\s*l[íi]quido[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoLiquido = pesoLiquidoMatch ? pesoLiquidoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
     let enderecoCompleto = endereco;
@@ -537,7 +537,7 @@ async function ensureInvoiceTables() {
       FOREIGN KEY (invoice_details_id) REFERENCES delivery_invoice_details(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `;
-  // Esta funÃ§Ã£o agora apenas define as queries, a execuÃ§Ã£o pode ser implementada se necessÃ¡rio.
+  // Esta função agora apenas define as queries, a execução pode ser implementada se necessário.
 }
 
 app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
@@ -560,7 +560,7 @@ app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), as
     `, [occurrenceId, req.user.company_id]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Ocorrï¿½ncia nï¿½o encontrada' });
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
     }
 
     const delivery = rows[0];
@@ -571,7 +571,7 @@ app.get('/api/occurrences/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), as
     });
 
   } catch (error) {
-    console.error('Erro ao obter ocorrï¿½ncia:', error);
+    console.error('Erro ao obter ocorrência:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -586,19 +586,19 @@ app.get('/api/occurrences/:id/photo', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER'
     );
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Ocorrï¿½ncia nï¿½o encontrada' });
+      return res.status(404).json({ error: 'Ocorrência não encontrada' });
     }
 
     const occurrence = rows[0];
 
     if (!occurrence.photo_url) {
-      return res.status(404).json({ error: 'Foto nï¿½o encontrada' });
+      return res.status(404).json({ error: 'Foto não encontrada' });
     }
 
     if (!fs.existsSync(occurrence.photo_url)) {
-      return res.status(404).json({ error: 'Arquivo nï¿½o encontrado' });
+      return res.status(404).json({ error: 'Arquivo não encontrado' });
     }
-
+    
     res.sendFile(path.resolve(occurrence.photo_url));
 
   } catch (error) {
@@ -648,7 +648,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
           rawTextFromBody ||
           (await extractTextWithDocumentAI(fileBuffer, file.mimetype));
       } else {
-        return res.status(400).json({ success: false, error: 'Formato de arquivo nao suportado. Envie XML, PDF ou imagem.' });
+        return res.status(400).json({ success: false, error: 'Formato de arquivo não suportado. Envie XML, PDF ou imagem.' });
       }
     } else if (structuredPayload && structuredPayload.raw_text) {
       textContent = structuredPayload.raw_text;
@@ -671,7 +671,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
     );
 
     if (!nfNumber) {
-      return res.status(400).json({ success: false, error: 'Nao foi possivel identificar o numero da nota fiscal.' });
+      return res.status(400).json({ success: false, error: 'Não foi possível identificar o número da nota fiscal.' });
     }
 
     const clientName = firstNonEmpty(
@@ -809,7 +809,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
   } catch (error) {
     console.error('Erro ao criar entrega a partir do SEFAZ:', error);
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(409).json({ success: false, error: 'Uma entrega com este numero de NF-e ja existe.' });
+      return res.status(409).json({ success: false, error: 'Uma entrega com este número de NF-e já existe.' });
     }
     res.status(500).json({ success: false, error: error.message || 'Erro interno do servidor.' });
   }
@@ -902,15 +902,15 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
 
     const deliveryDateExpr = 'DATE(COALESCE(d.delivery_date_expected, d.created_at))';
 
-    // Se o usuÃ¡rio Ã© um motorista e nÃ£o hÃ¡ filtro de data, mostramos todas as pendentes/em andamento.
+    // Se o usuário é um motorista e não há filtro de data, mostramos todas as pendentes/em andamento.
     if ((user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') && !start_date && !end_date && !status) {
       query += ` AND (${deliveryDateExpr} = CURDATE() OR UPPER(d.status) IN ('PENDING', 'IN_TRANSIT', 'PENDENTE', 'EM_ANDAMENTO'))`;
     } else if (status) {
-      // Se um status Ã© fornecido, aplica o filtro para qualquer tipo de usuÃ¡rio
+      // Se um status é fornecido, aplica o filtro para qualquer tipo de usuário
       query += ' AND d.status = ?';
       params.push(status);
     } else {
-      // Para outros usuÃ¡rios ou quando hÃ¡ filtro de data, mantÃ©m a lÃ³gica original.
+      // Para outros usuários ou quando há filtro de data, mantém a lógica original.
       if (start_date && end_date) {
         query += ' AND ' + deliveryDateExpr + ' >= ? AND ' + deliveryDateExpr + ' <= ?';
         params.push(start_date, end_date);
@@ -977,14 +977,14 @@ app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), asy
     `, [deliveryId, req.user.company_id]);
 
     if (rows.length === 0) {
-      return res.status(404).json({ error: 'Entrega nï¿½o encontrada' });
+      return res.status(404).json({ error: 'Entrega não encontrada' });
     }
 
     const delivery = rows[0];
     delivery.has_receipt = Boolean(delivery.receipt_id);
 
-    // A consulta principal jÃ¡ busca todos os dados necessÃ¡rios das tabelas
-    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela nÃ£o existe no schema principal.
+    // A consulta principal já busca todos os dados necessários das tabelas
+    // delivery_notes e delivery_invoice_details. A busca por 'itens_de_linha' foi removida pois a tabela não existe no schema principal.
 
     const [occurrences] = await pool.query(
       'SELECT * FROM delivery_occurrences WHERE delivery_id = ? ORDER BY created_at DESC',
@@ -1014,7 +1014,7 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
     );
 
     if (deliveryRows.length === 0) {
-      return res.status(404).json({ error: 'Entrega nï¿½o encontrada' });
+      return res.status(404).json({ error: 'Entrega não encontrada' });
     }
 
     await pool.query(
@@ -1035,10 +1035,10 @@ app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
 
 if (require.main === module) {
   const PORT = Number(process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || process.env.PORT || 3003);
+  const allowedOrigins = Array.from(new Set(whitelist.map(p => p.toString())));
   app.listen(PORT, () => {
-    const summaryOrigins = [...allowedOriginSet, vercelOriginPattern.toString()];
-    console.log(`?? CORS configurado para as origens: [
-  ${summaryOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
+    console.log(`🔒 CORS configurado para as origens: [
+  ${allowedOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
 ]`);
     console.log(`Deliveries & Routes Service rodando na porta ${PORT}`);
   });
