@@ -1312,6 +1312,64 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
   return data;
 }
 
+/**
+ * @swagger
+ * /api/receipts/process-documentai:
+ *   post:
+ *     summary: Processa um documento (imagem, PDF) usando o Google Document AI.
+ *     description: Recebe um arquivo, o processa com um processador pré-configurado do Document AI e retorna os dados estruturados, texto bruto e outras informações.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: O arquivo de imagem ou PDF a ser processado.
+ *     responses:
+ *       200:
+ *         description: Documento processado com sucesso.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *       400:
+ *         description: Arquivo não fornecido.
+ *       503:
+ *         description: Serviço do Document AI não configurado no backend.
+ */
+app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Arquivo nao fornecido' });
+    }
+    if (!isDocumentAIReady()) {
+      return res.status(503).json({
+        error: 'Document AI nao esta configurado no servidor',
+        details: 'Verifique as credenciais e variaveis DOCUMENT_AI_* no backend.'
+      });
+    }
+    const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+    const [result] = await documentAIClient.processDocument({ name: processorName, rawDocument: { content: req.file.buffer.toString('base64'), mimeType: req.file.mimetype } });
+    const { document } = result;
+    const { extractedData, rawFields } = extractDocumentAIData(document);
+    res.json({ success: true, data: { extractedData, rawText: document.text, entities: document.entities || [], confidence: calculateConfidence(document), rawFields } });
+  } catch (error) {
+    console.error('[Receipts] Erro ao processar com Document AI:', error);
+    res.status(500).json({ error: 'Erro ao processar documento', details: error.message });
+  }
+});
+
 // CORRE��O: Usa a porta do .env ou a porta padr�o 3004.
 const PORT = Number(process.env.RECEIPTS_SERVICE_PORT || process.env.RECEIPTS_PORT || process.env.PORT || 3004);
 app.listen(PORT, () => console.log(`Receipts OCR Service rodando na porta ${PORT}`));
