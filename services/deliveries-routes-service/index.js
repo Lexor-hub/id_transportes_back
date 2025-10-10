@@ -12,7 +12,10 @@ const mammoth = require('mammoth');
 const pdfParse = require('pdf-parse');
 const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
 const { Storage } = require('@google-cloud/storage');
-const { ensureGoogleCredentialsFile } = require('../../shared/googleCredentials');
+const {
+  ensureGoogleCredentialsFile,
+  getServiceAccountProjectId,
+} = require('../../shared/googleCredentials');
 
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret) {
@@ -84,6 +87,10 @@ const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image
 
 // Centralizar a inicialização dos clientes do Google Cloud
 ensureGoogleCredentialsFile();
+const serviceAccountProjectId = getServiceAccountProjectId();
+if (!process.env.DOCUMENT_AI_PROJECT_ID && serviceAccountProjectId) {
+  process.env.DOCUMENT_AI_PROJECT_ID = serviceAccountProjectId;
+}
 
 const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
 let documentAIClient = null;

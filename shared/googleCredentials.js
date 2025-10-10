@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 let cachedPath = null;
+let cachedProjectId = null;
 
 function normalizeInlineCredentials(rawValue) {
   if (!rawValue) return null;
@@ -45,6 +46,15 @@ function ensureGoogleCredentialsFile() {
 
     if (fs.existsSync(resolvedPath)) {
       cachedPath = resolvedPath;
+      try {
+        const raw = fs.readFileSync(resolvedPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.project_id) {
+          cachedProjectId = parsed.project_id;
+        }
+      } catch (error) {
+        console.warn('[GoogleCredentials] Não foi possível ler o project_id do arquivo existente:', error.message);
+      }
       return cachedPath;
     }
   }
@@ -58,6 +68,14 @@ function ensureGoogleCredentialsFile() {
     fs.mkdirSync(targetDir, { recursive: true });
     const targetPath = path.join(targetDir, 'google-credentials.json');
     fs.writeFileSync(targetPath, normalized, { encoding: 'utf8', mode: 0o600 });
+    try {
+      const parsed = JSON.parse(normalized);
+      if (parsed && parsed.project_id) {
+        cachedProjectId = parsed.project_id;
+      }
+    } catch (error) {
+      console.warn('[GoogleCredentials] Credencial inline não é JSON válido:', error.message);
+    }
     process.env.GOOGLE_APPLICATION_CREDENTIALS = targetPath;
     cachedPath = targetPath;
     return cachedPath;
@@ -67,6 +85,31 @@ function ensureGoogleCredentialsFile() {
   }
 }
 
+function getServiceAccountProjectId() {
+  if (cachedProjectId) {
+    return cachedProjectId;
+  }
+
+  const currentPath = ensureGoogleCredentialsFile();
+  if (!currentPath) {
+    return null;
+  }
+
+  try {
+    const raw = fs.readFileSync(currentPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.project_id) {
+      cachedProjectId = parsed.project_id;
+      return cachedProjectId;
+    }
+  } catch (error) {
+    console.warn('[GoogleCredentials] Não foi possível ler o project_id das credenciais:', error.message);
+  }
+
+  return null;
+}
+
 module.exports = {
   ensureGoogleCredentialsFile,
+  getServiceAccountProjectId,
 };
