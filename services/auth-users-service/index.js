@@ -77,6 +77,7 @@ const defaultOrigins = [
 const allowedOriginPatterns = [
   /^https:\/\/transportes-.*\.vercel\.app$/,
   /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/trasportes-.*\.vercel\.app$/, // Adicionado para corrigir o nome do projeto Vercel
 ];
 
 const whitelist = [...defaultOrigins, ...allowedOriginPatterns];
