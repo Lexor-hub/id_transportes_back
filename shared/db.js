@@ -1,13 +1,44 @@
-require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
+const path = require('path');
+const { URL } = require('url');
+
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const mysql = require('mysql2/promise');
+
+function buildConnectionConfig() {
+  if (process.env.DATABASE_URL) {
+    try {
+      const dbUrl = new URL(process.env.DATABASE_URL);
+
+      return {
+        host: dbUrl.hostname,
+        user: decodeURIComponent(dbUrl.username),
+        password: decodeURIComponent(dbUrl.password),
+        database: dbUrl.pathname ? dbUrl.pathname.replace(/^\//, '') : undefined,
+        port: dbUrl.port ? Number(dbUrl.port) : 3306
+      };
+    } catch (error) {
+      console.error('❌ DATABASE_URL inválida. Verifique o formato da variável.', error.message);
+    }
+  }
+
+  return {
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306
+  };
+}
+
+const baseConfig = buildConnectionConfig();
 
 // Configuração do Pool de Conexões
 const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 3306,
+  host: baseConfig.host,
+  user: baseConfig.user,
+  password: baseConfig.password,
+  database: baseConfig.database,
+  port: baseConfig.port || 3306,
   
   // --- Configurações de Robustez ---
   waitForConnections: true, // Espera por uma conexão disponível em vez de falhar imediatamente
