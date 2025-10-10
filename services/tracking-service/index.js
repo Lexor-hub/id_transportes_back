@@ -28,7 +28,55 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
+];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/trasportes-.*\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
+];
+
+const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    const isAllowed = whitelist.some((pattern) =>
+      pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
+    );
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.error(`[Tracking CORS] Origin '${origin}' not allowed.`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Armazenar conexões WebSocket por empresa
