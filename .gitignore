@@ -79,6 +79,7 @@ public
 # Temporary folders
 tmp/
 temp/
+.runtime/
 
 # IDE
 .vscode/

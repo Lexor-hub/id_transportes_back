@@ -27,6 +27,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
+const { ensureGoogleCredentialsFile } = require('../../shared/googleCredentials');
 
 const RECEIPTS_PUBLIC_BASE_URL =
   process.env.RECEIPTS_PUBLIC_BASE_URL ||
@@ -47,6 +48,8 @@ const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
 const { Storage } = require('@google-cloud/storage');
 
 // Centralizar a inicialização dos clientes do Google Cloud
+ensureGoogleCredentialsFile();
+
 const hasGoogleCredentials = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
 let visionClient = null;
 let documentAIClient = null;
