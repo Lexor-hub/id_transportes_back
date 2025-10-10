@@ -1,4 +1,4 @@
-﻿﻿﻿﻿
+﻿﻿﻿
 const dotenv = require('dotenv');
 const path = require('path');
 const fs = require('fs');
@@ -38,6 +38,9 @@ let visionClient = null;
 let documentAIClient = null;
 let storage = null;
 let bucket = null;
+
+const isDocumentAIReady = () =>
+  documentAIClient && typeof documentAIClient.processDocument === 'function';
 
 if (hasGoogleCredentials) {
   try {
@@ -535,11 +538,15 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
         console.error(' Erro ao processar com Tesseract:', tessError);
         return res.status(400).json({ error: 'não foi possível processar o arquivo com Tesseract' });
       }
-    } else if (engine === 'documentai') {
-      console.log(` Processando documento usando Google Document AI`);
-      try {
-        // Formatar o nome do processador
-        const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+  } else if (engine === 'documentai') {
+    console.log(` Processando documento usando Google Document AI`);
+    try {
+      if (!isDocumentAIReady()) {
+        console.warn('[Receipts] Document AI solicitado, mas o cliente não está configurado.');
+        return res.status(503).json({ error: 'Document AI não está configurado no servidor' });
+      }
+      // Formatar o nome do processador
+      const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
         
         const request = {
           name: processorName,
@@ -652,8 +659,15 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
  */
 app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Arquivo nÃƒÆ’Ã‚Â£o fornecido' });
+        if (!req.file) {
+      return res.status(400).json({ error: 'Arquivo nao fornecido' });
+    }
+    if (!isDocumentAIReady()) {
+      console.warn('[Receipts] Endpoint /process-documentai chamado sem Document AI configurado.');
+      return res.status(503).json({
+        error: 'Document AI nao esta configurado no servidor',
+        details: 'Verifique as credenciais e variaveis DOCUMENT_AI_* no backend.'
+      });
     }
 
     const file = req.file;
