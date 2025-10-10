@@ -28,6 +28,20 @@ const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
+const RECEIPTS_PUBLIC_BASE_URL =
+  process.env.RECEIPTS_PUBLIC_BASE_URL ||
+  process.env.RECEIPTS_SERVICE_PUBLIC_URL ||
+  process.env.BACKEND_PUBLIC_BASE_URL ||
+  process.env.API_PUBLIC_BASE_URL ||
+  '';
+
+const buildReceiptViewUrl = (storagePath) => {
+  if (!storagePath) return null;
+  const base = RECEIPTS_PUBLIC_BASE_URL || 'http://localhost:3004';
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
+  return `${normalizedBase}/api/receipts/view?path=${encodeURIComponent(storagePath)}`;
+};
+
 const vision = require('@google-cloud/vision');
 const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
 const { Storage } = require('@google-cloud/storage');
@@ -141,10 +155,14 @@ async function uploadToGCS(file, folder = 'receipts') {
       reject(err);
     });
     blobStream.on('finish', async () => {
-      // CORREÇÃO: Não torna o arquivo público. Em vez disso, cria uma URL que aponta para o nosso próprio backend.
-      // O próprio serviço de canhotos (porta 3004) será responsável por servir a imagem.
-      const backendUrl = `http://localhost:3004/api/receipts/view?path=${encodeURIComponent(blob.name)}`;
-      console.log(`[GCS] Arquivo salvo. URL de acesso via backend: ${backendUrl}`);
+      const backendUrl = buildReceiptViewUrl(blob.name);
+      console.log(
+        '[GCS] Arquivo salvo.',
+        {
+          storagePath: blob.name,
+          publicBase: RECEIPTS_PUBLIC_BASE_URL || 'http://localhost:3004'
+        }
+      );
       resolve({ publicUrl: backendUrl, gcsPath: blob.name });
     });
 
