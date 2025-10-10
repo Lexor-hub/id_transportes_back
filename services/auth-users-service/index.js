@@ -104,6 +104,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// Habilita o pre-flight para todas as rotas.
+// Isso garante que as requisições OPTIONS recebam uma resposta 200 OK com os headers de CORS corretos.
+app.options('*', cors(corsOptions));
 
 // Servir arquivos estáticos (como o manifest) ANTES de qualquer rota de API
 // Isso evita que o middleware de autenticação bloqueie o acesso a eles.
