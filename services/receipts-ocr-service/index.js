@@ -602,66 +602,78 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
       }
   } else if (engine === 'documentai') {
     console.log(` Processando documento usando Google Document AI`);
-        try {
+    try {
       if (!isDocumentAIReady()) {
-        const missing = [];
-        if (!OCR_CONFIG.documentAIProjectId) missing.push('DOCUMENT_AI_PROJECT_ID');
-        if (!OCR_CONFIG.documentAIProcessorId) missing.push('DOCUMENT_AI_PROCESSOR_ID');
-        console.warn('[Receipts] Document AI solicitado, mas a configuracao esta incompleta.', {
-          missing,
-          config: describeDocumentAIConfig(),
-        });
-        return res.status(503).json({
-          error: 'Document AI nao esta configurado no servidor',
-          details: missing.length
-            ? 'Variaveis ausentes: ' + missing.join(', ') + '.'
-            : 'Verifique as credenciais e variaveis DOCUMENT_AI_* no backend.',
-        });
+        console.warn('[Receipts] Document AI solicitado, mas o cliente não está configurado.');
+        return res.status(503).json({ error: 'Document AI não está configurado no servidor' });
       }
-      const file = req.file;
-    console.log('Ã°Å¸â€Â Processando arquivo com Document AI:', file.originalname);
-
-    // Upload para GCS se necessÃƒÂ¡rio
-    const uploadResult = await uploadToGCS(file, 'documentai');
-    
-    // Processar com Document AI
-    const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
-    
-    const request = {
-      name: processorName,
-      rawDocument: {
-        content: file.buffer.toString('base64'),
-        mimeType: file.mimetype
+      // Formatar o nome do processador
+      const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
+        
+        const request = {
+          name: processorName,
+          rawDocument: {
+            content: fileContent.toString('base64'),
+            mimeType: fileExt === '.pdf' ? 'application/pdf' : 
+                      (fileExt === '.doc' || fileExt === '.docx') ? 'application/msword' : 
+                      'image/jpeg'
+          }
+        };
+        
+        const [result] = await documentAIClient.processDocument(request);
+        const { document } = result;
+        text = document.text;
+        req.documentAIEntities = extractDocumentAIData(document).extractedData;
+      } catch (docAIError) {
+        console.error(' Erro ao processar com Document AI:', docAIError);
+        return res.status(400).json({ error: 'não foi possível processar o arquivo com Document AI' });
       }
-    };
+    } else {
+      // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ OCR com Google Vision para imagens
+      console.log(` Processando imagem usando Google Cloud Vision API`);
+      try {
+        // Usando Text Detection otimizado para imagens de recibos
+        const [result] = await visionClient.textDetection({
+          image: { content: fileContent },
+          imageContext: {
+            languageHints: ['pt-BR', 'pt', 'en']
+          }
+        });
+        
+        const detections = result.textAnnotations;
+        text = detections.length > 0 ? detections[0].description : '';
+        console.log(` Imagem processada com sucesso. Texto extraidos: ${text.substring(0, 100)}...`);
+      } catch (imgError) {
+        console.error(' Erro ao processar imagem:', imgError);
+        return res.status(400).json({ error: 'não foi possível processar a imagem' });
+      }
+    }
 
-    const [result] = await documentAIClient.processDocument(request);
-    const { document } = result;
+    if (!text) {
+      return res.status(400).json({ error: 'Nenhum texto detectado no canhoto' });
+    }
 
-    // Extrair dados estruturados
-    const { extractedData, rawFields } = extractDocumentAIData(document);
+    // Extrair dados estruturados do texto usando Google Cloud Vision
+    console.log(' Extraindo dados estruturados do texto OCR');
+    const ocrData = await extractStructuredData(text, fileExt, req.documentAIEntities);
 
-    // Retornar dados estruturados no formato esperado pelo frontend
+    // Atualizar status do canhoto
+    await pool.query(
+      'UPDATE delivery_receipts SET ocr_data = ?, status = ?, processed_at = NOW() WHERE id = ?',
+      [JSON.stringify(ocrData), 'PROCESSED', receiptId])
+
     res.json({
       success: true,
       data: {
-        extractedData,
-        rawText: document.text,
-        entities: document.entities || [],
-        confidence: calculateConfidence(document),
-        uploadUrl: uploadResult ? uploadResult.publicUrl : null,
-        rawFields
+        engine_used: engine,
+        ocr_data: ocrData,
+        raw_text: text
       }
     });
 
-    } catch (error) {
-    console.error('[Receipts] Erro ao processar com Document AI (endpoint /process-documentai):', error, {
-      config: describeDocumentAIConfig(),
-    });
-    res.status(500).json({
-      error: 'Erro ao processar documento',
-      details: error.message,
-    });
+  } catch (error) {
+    console.error('Erro no processamento OCR:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1305,9 +1317,3 @@ const PORT = Number(process.env.RECEIPTS_SERVICE_PORT || process.env.RECEIPTS_PO
 app.listen(PORT, () => console.log(`Receipts OCR Service rodando na porta ${PORT}`));
 
 module.exports = app;
-
-
-
-
-
-
