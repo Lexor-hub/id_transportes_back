@@ -30,6 +30,7 @@ const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
 const allowedOriginPatterns = [
   /^https:\/\/transportes-.*\.vercel\.app$/,
   /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/trasportes-.*\.vercel\.app$/,
   ...wildcardOrigins.map((pattern) => {
     const escaped = pattern
       .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
