@@ -167,18 +167,56 @@ const swaggerSpec = swaggerJsdoc(options);
 
 const app = express();
 app.use(express.json());
-// CORREÇÃO: Configuração de CORS mais robusta para aceitar as origens do frontend.
-const allowedOrigins = ['http://localhost:8080', 'http://localhost:5173', 'http://localhost:8081', 'http://127.0.0.1:8080', 'http://127.0.0.1:8081'];
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+// Configuracao CORS alinhada com os outros servicos HTTP
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
+];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/trasportes-.*\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
+];
+
+const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    const isAllowed = whitelist.some((pattern) =>
+      pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
+    );
+
+    if (isAllowed) {
       callback(null, true);
     } else {
+      console.error(`[Receipts CORS] Origin '${origin}' not allowed.`);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
-}));
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Configurar multer para upload de arquivos (usando memoryStorage para GCS)
