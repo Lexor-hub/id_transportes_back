@@ -769,7 +769,8 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
 
     const expectedDate = firstNonEmpty(
       parseDateValue(structuredPayload && structuredPayload.nf_data && structuredPayload.nf_data.data_saida),
-      parseDateValue(summaryPayload && summaryPayload.delivery_date_expected)
+      // CORREÇÃO: Prioriza o campo delivery_date_expected do summaryPayload, que vem do frontend.
+      parseDateValue(summaryPayload?.delivery_date_expected)
     );
 
     const sanitizedNfNumber = nfNumber != null ? String(nfNumber).trim() : '';

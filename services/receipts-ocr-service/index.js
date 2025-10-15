@@ -263,15 +263,16 @@ const allowedOriginPatterns = [
 
 const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
 
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  return whitelist.some((pattern) =>
+    pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
+  );
+};
+
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-
-    const isAllowed = whitelist.some((pattern) =>
-      pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
-    );
-
-    if (isAllowed) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
       console.error(`[Receipts CORS] Origin '${origin}' not allowed.`);
@@ -281,7 +282,18 @@ const corsOptions = {
   credentials: true,
 };
 
+const ensureCorsHeaders = (req, res) => {
+  const origin = req.headers?.origin;
+  if (!origin || !isOriginAllowed(origin)) {
+    return;
+  }
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Vary', 'Origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+};
+
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Configurar multer para upload de arquivos (usando memoryStorage para GCS)
@@ -333,6 +345,7 @@ function authorize(roles = []) {
 
 async function serveReceiptFile(req, res, rawParam) {
   try {
+    ensureCorsHeaders(req, res);
     let gcsPath = rawParam;
     if (typeof gcsPath === 'string' && gcsPath.length > 0) {
       try {
