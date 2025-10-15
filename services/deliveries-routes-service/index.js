@@ -977,28 +977,31 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
       params.push(client_id);
     }
 
+    // CORREÇÃO: Lógica de filtro de data e status refatorada para maior clareza e correção.
     const deliveryDateExpr = 'DATE(COALESCE(d.delivery_date_expected, d.created_at))';
+    const openStatuses = ['PENDING', 'IN_TRANSIT', 'PENDENTE', 'EM_ANDAMENTO', 'PROBLEM', 'REATTEMPTED'];
 
-    // Se o usuário é um motorista e não há filtro de data, mostramos todas as pendentes/em andamento. // Corrigido
-    if ((user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') && !start_date && !end_date && !status) {
-      query += ` AND (${deliveryDateExpr} = CURDATE() OR UPPER(d.status) IN ('PENDING', 'IN_TRANSIT', 'PENDENTE', 'EM_ANDAMENTO'))`;
-    } else if (status) {
-      // Se um status é fornecido, aplica o filtro para qualquer tipo de usuário // Corrigido
-      query += ' AND d.status = ?';
-      params.push(status);
-    } else {
-      // Para outros usuários ou quando há filtro de data, mantém a lógica original. // Corrigido
+    if (user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') {
+      // Para motoristas, mostrar entregas do dia OU qualquer entrega com status em aberto.
+      // Isso garante que entregas antigas não resolvidas continuem visíveis.
+      if (!start_date && !end_date && !status) {
+        const statusPlaceholders = openStatuses.map(() => '?').join(',');
+        query += ` AND (${deliveryDateExpr} = CURDATE() OR d.status IN (${statusPlaceholders}))`;
+        params.push(...openStatuses);
+      }
+    } else { // Para ADMIN e SUPERVISOR
+      // Se houver filtro de data, aplica. Senão, mostra apenas as de hoje.
       if (start_date && end_date) {
-        query += ' AND ' + deliveryDateExpr + ' >= ? AND ' + deliveryDateExpr + ' <= ?';
+        query += ` AND ${deliveryDateExpr} BETWEEN ? AND ?`;
         params.push(start_date, end_date);
       } else if (start_date) {
-        query += ' AND ' + deliveryDateExpr + ' >= ?';
+        query += ` AND ${deliveryDateExpr} >= ?`;
         params.push(start_date);
       } else if (end_date) {
-        query += ' AND ' + deliveryDateExpr + ' <= ?';
+        query += ` AND ${deliveryDateExpr} <= ?`;
         params.push(end_date);
-      } else {
-        query += ' AND ' + deliveryDateExpr + ' = CURDATE()';
+      } else if (!status) { // Só aplica o filtro de hoje se não houver filtro de status
+        query += ` AND ${deliveryDateExpr} = CURDATE()`;
       }
     }
 
