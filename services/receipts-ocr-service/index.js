@@ -292,21 +292,22 @@ const ensureCorsHeaders = (req, res) => {
   res.header('Access-Control-Allow-Credentials', 'true');
 };
 
-app.use(cors(corsOptions));
 app.use((req, res, next) => {
-  ensureCorsHeaders(req, res);
   if (req.method === 'OPTIONS') {
-    const requestHeaders = req.headers['access-control-request-headers'];
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    if (requestHeaders) {
-      res.header('Access-Control-Allow-Headers', requestHeaders);
-    } else {
-      res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
+    // Trata a requisição preflight (OPTIONS) explicitamente
+    const origin = req.headers.origin;
+    if (isOriginAllowed(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
     }
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    const requestHeaders = req.headers['access-control-request-headers'];
+    res.header('Access-Control-Allow-Headers', requestHeaders || 'Authorization, Content-Type, Accept');
+    res.header('Access-Control-Allow-Credentials', 'true');
     return res.sendStatus(204);
   }
   next();
 });
+app.use(cors(corsOptions));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Configurar multer para upload de arquivos (usando memoryStorage para GCS)
