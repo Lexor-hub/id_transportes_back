@@ -82,6 +82,46 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // Armazenar conexões WebSocket por empresa
 const connections = new Map();
 
+const driverVehicleMap = new Map(); // driver_id -> { vehicleId, vehicleLabel, companyId, updatedAt }
+
+async function rememberVehicle(driverId, companyId, vehicleId) {
+  if (vehicleId === undefined || vehicleId === null || vehicleId === '') {
+    return;
+  }
+
+  const driverKey = String(driverId);
+  const vehicleIdStr = String(vehicleId);
+  const existing = driverVehicleMap.get(driverKey);
+  if (existing && existing.vehicleId === vehicleIdStr) {
+    driverVehicleMap.set(driverKey, { ...existing, updatedAt: new Date().toISOString() });
+    return;
+  }
+
+  let vehicleLabel = null;
+  try {
+    const [rows] = await pool.query('SELECT plate, model, brand FROM vehicles WHERE id = ? LIMIT 1', [vehicleIdStr]);
+    if (Array.isArray(rows) && rows.length > 0) {
+      const record = rows[0];
+      const parts = [];
+      if (record.plate) parts.push(String(record.plate).toUpperCase());
+      if (record.model) parts.push(String(record.model));
+      if (parts.length === 0 && record.brand) parts.push(String(record.brand));
+      if (parts.length) {
+        vehicleLabel = parts.join(' - ');
+      }
+    }
+  } catch (error) {
+    console.warn('[Tracking] Failed to resolve vehicle information:', error.message);
+  }
+
+  driverVehicleMap.set(driverKey, {
+    vehicleId: vehicleIdStr,
+    vehicleLabel,
+    companyId: companyId ? String(companyId) : null,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 // Middleware de autenticação
 function authorize(roles = []) {
   return (req, res, next) => {
@@ -167,7 +207,13 @@ async function saveLocation(data) {
       data.delivery_id || null
     ]);
   } catch (error) {
-    console.error('Erro ao salvar localização:', error);
+    console.error('Erro ao salvar localizacao:', error);
+  }
+
+  try {
+    await rememberVehicle(data.driver_id, data.company_id, data.vehicle_id);
+  } catch (error) {
+    console.warn('[Tracking] Nao foi possivel atualizar o veiculo do motorista:', error.message);
   }
 }
 
@@ -216,7 +262,8 @@ function broadcastToCompany(companyId, message) {
  */
 app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
     try {
-        const { latitude, longitude, accuracy, speed, heading, delivery_id } = req.body;
+        const { latitude, longitude, accuracy, speed, heading, delivery_id, vehicle_id: vehicleIdBody, vehicleId } = req.body;
+        const vehicle_id = vehicleIdBody ?? vehicleId ?? null;
         const company_id = req.user.company_id;
         const user_id = req.user.id; // Pega o user_id do token JWT
 
@@ -228,6 +275,9 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
             return res.status(404).json({ error: 'Motorista não encontrado para este usuário.' });
         }
         const driver_id = driverRows[0].id; // Este é o ID correto para a tabela tracking_points
+        if (vehicle_id !== null && vehicle_id !== undefined) {
+            await rememberVehicle(driver_id, company_id, vehicle_id);
+        }
 
         const parsedLatitude = latitude === undefined || latitude === null ? null : Number(latitude);
         const parsedLongitude = longitude === undefined || longitude === null ? null : Number(longitude);
@@ -324,6 +374,57 @@ app.get('/api/tracking/drivers/current-locations', authorize(['ADMIN', 'SUPERVIS
         AND tp.longitude IS NOT NULL
       ORDER BY tp.timestamp DESC
     `, [req.user.company_id, req.user.company_id]);
+
+    const vehicleIdsToLookup = new Set();
+    for (const row of rows) {
+      const driverKey = String(row.driver_id);
+      const mapping = driverVehicleMap.get(driverKey);
+      if (mapping && (!mapping.companyId || mapping.companyId === String(req.user.company_id))) {
+        row.vehicle_id = mapping.vehicleId ?? null;
+        row.vehicle_label = mapping.vehicleLabel ?? null;
+        if (!row.vehicle_label && row.vehicle_id) {
+          vehicleIdsToLookup.add(String(row.vehicle_id));
+        }
+      } else {
+        row.vehicle_id = null;
+        row.vehicle_label = null;
+      }
+    }
+
+    if (vehicleIdsToLookup.size > 0) {
+      try {
+        const [vehicleRows] = await pool.query(
+          'SELECT id, plate, model, brand FROM vehicles WHERE id IN (?)',
+          [Array.from(vehicleIdsToLookup)]
+        );
+        const labelMap = new Map();
+        if (Array.isArray(vehicleRows)) {
+          for (const vehicle of vehicleRows) {
+            const parts = [];
+            if (vehicle.plate) parts.push(String(vehicle.plate).toUpperCase());
+            if (vehicle.model) parts.push(String(vehicle.model));
+            if (parts.length === 0 && vehicle.brand) parts.push(String(vehicle.brand));
+            const label = parts.length ? parts.join(' - ') : `Veiculo ${vehicle.id}`;
+            labelMap.set(String(vehicle.id), label);
+          }
+        }
+
+        for (const row of rows) {
+          if (row.vehicle_id) {
+            const label = labelMap.get(String(row.vehicle_id));
+            if (label) {
+              row.vehicle_label = label;
+              const mapping = driverVehicleMap.get(String(row.driver_id));
+              if (mapping) {
+                driverVehicleMap.set(String(row.driver_id), { ...mapping, vehicleLabel: label });
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[Tracking] Falha ao buscar dados dos veiculos:', error.message);
+      }
+    }
 
     console.log(`[Tracking] Consulta executada. ${rows.length} localizações encontradas.`);
     if (rows.length > 0) {

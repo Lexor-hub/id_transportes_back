@@ -83,6 +83,17 @@ const OCR_CONFIG = {
   documentAIProcessorId: process.env.DOCUMENT_AI_PROCESSOR_ID
 };
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
+const recentDeliveryAlerts = [];
+
+const pushDeliveryAlert = (alert) => {
+  if (!alert || typeof alert !== 'object') return;
+  recentDeliveryAlerts.unshift(alert);
+  if (recentDeliveryAlerts.length > 50) {
+    recentDeliveryAlerts.length = 50;
+  }
+};
+
+
 
 
 // Centralizar a inicialização dos clientes do Google Cloud
@@ -1090,7 +1101,7 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
     const userType = (req.user.user_type || req.user.role || '').toUpperCase();
 
     const [deliveryRows] = await pool.query(
-      'SELECT id, driver_id, created_by_user_id, status FROM delivery_notes WHERE id = ? AND company_id = ?',
+      'SELECT id, driver_id, created_by_user_id, status, nf_number FROM delivery_notes WHERE id = ? AND company_id = ?',
       [deliveryId, companyId]
     );
 
@@ -1099,6 +1110,25 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
     }
 
     const delivery = deliveryRows[0];
+
+    let driverName = null;
+    if (delivery.driver_id) {
+      try {
+        const [driverInfo] = await pool.query(
+          `SELECT COALESCE(u.full_name, u.username, u.email, d.name) AS driver_name
+             FROM drivers d
+             LEFT JOIN users u ON d.user_id = u.id
+           WHERE d.id = ? LIMIT 1`,
+          [delivery.driver_id]
+        );
+        if (Array.isArray(driverInfo) && driverInfo.length > 0) {
+          driverName = driverInfo[0].driver_name ? String(driverInfo[0].driver_name) : null;
+        }
+      } catch (infoError) {
+        console.warn('[Deliveries] Nao foi possivel identificar o motorista da entrega:', infoError.message);
+      }
+    }
+
     const normalizedStatus = (delivery.status || '').toString().toUpperCase();
     const completedStatuses = new Set(['DELIVERED', 'REALIZADA', 'COMPLETED', 'FINALIZADA']);
 
@@ -1145,10 +1175,34 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 
     await pool.query('DELETE FROM delivery_notes WHERE id = ? AND company_id = ?', [deliveryId, companyId]);
 
+    pushDeliveryAlert({
+      type: 'delivery_deleted',
+      companyId: companyId ? String(companyId) : null,
+      deliveryId: String(deliveryId),
+      nfNumber: delivery.nf_number ? String(delivery.nf_number) : null,
+      driverId: delivery.driver_id ? String(delivery.driver_id) : null,
+      driverName: driverName || 'Motorista',
+      timestamp: new Date().toISOString(),
+    });
+
     res.json({ success: true, message: 'Entrega excluída com sucesso.' });
   } catch (error) {
     console.error('Erro ao excluir entrega:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), (req, res) => {
+  try {
+    const companyId = req.user.company_id ? String(req.user.company_id) : null;
+    const alerts = recentDeliveryAlerts
+      .filter((alert) => !alert.companyId || alert.companyId === companyId)
+      .slice(0, 20);
+    res.json({ success: true, data: alerts });
+  } catch (error) {
+    console.error('Erro ao obter alertas recentes:', error);
+    res.status(500).json({ success: false, error: 'Falha ao carregar alertas.' });
   }
 });
 
