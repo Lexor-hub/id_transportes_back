@@ -924,31 +924,19 @@ function extractDocumentAIData(document) {
   };
 
   const extractedData = {
-    nfNumber: sanitizeNfNumber(takeFromAll(['nro', 'invoice_number', 'invoice_id', 'chave', 'chave_de_acesso', 'document_number'])),
-    clientName: takeFirst(['receiver_name', 'ship_to_name', 'remit_to_name', 'customer_name', 'destinatario_nome'], normalizeString) || takeFirst(['supplier_name'], normalizeString),
-    clientCnpj: takeTaxId(['receiver_tax_id', 'customer_tax_id', 'customer_id', 'tax_id', 'recipient_tax_id']) || takeTaxId(['supplier_tax_id']),
-    deliveryAddress: joinAddress(['receiver_address', 'ship_to_address', 'remit_to_address']) || joinAddress(['supplier_address']),
-    merchandiseValue: takeCurrency(['total_amount', 'net_amount', 'amount_due', 'invoice_total', 'valor_total', 'grand_total', 'valor_total_nota']),
-    volume: takeNumber(['volume', 'volumes', 'line_item/quantity', 'total_volume']) || '1',
-    weight: takeNumber(['weight', 'total_weight', 'gross_weight', 'peso', 'peso_bruto', 'peso_liquido']),
+    // Capturando apenas os campos solicitados
+    nfNumber: sanitizeNfNumber(takeFromAll(['nro', 'invoice_number', 'invoice_id', 'document_number'])),
+    nfeKey: sanitizeNfNumber(takeFromAll(['nfe_key', 'access_key', 'chave_nfe', 'chave_de_acesso', 'chave'])),
+    clientName: takeFirst(['receiver_name', 'ship_to_name', 'customer_name', 'destinatario_nome'], normalizeString),
+    productValue: takeCurrency(['net_amount', 'valor_total_produtos', 'subtotal']),
+    invoiceTotalValue: takeCurrency(['total_amount', 'amount_due', 'valor_total_nota', 'grand_total']),
     issueDate: takeDate(['issue_date', 'invoice_date', 'data_emissao', 'emission_date']),
-    dueDate: takeDate(['due_date', 'payment_due_date', 'data_vencimento']),
-    observations: '',
-    nfeKey: sanitizeNfNumber(takeFromAll(['nfe_key', 'access_key', 'invoice_access_key', 'chave_nfe', 'chave_da_nfe', 'chave_de_acesso', 'chave'])),
-    lineItems: []
+    departureDate: takeDate(['ship_date', 'data_saida', 'shipment_date', 'dt_saida_entrada']),
   };
 
-  if (document?.text) {
-    const preview = document.text.substring(0, 180).replace(/\s+/g, ' ').trim();
-    extractedData.observations = `Dados extraÃƒÂ­dos automaticamente via Document AI. Texto completo: ${preview}...`;
-  }
-
-  if (extractedData.issueDate && !extractedData.dueDate) {
-    const issue = new Date(extractedData.issueDate);
-    if (!isNaN(issue.getTime())) {
-      issue.setDate(issue.getDate() + 30);
-      extractedData.dueDate = issue.toISOString().split('T')[0];
-    }
+  // Se o valor total da nota não for encontrado, usar o valor dos produtos como fallback
+  if (!extractedData.invoiceTotalValue && extractedData.productValue) {
+    extractedData.invoiceTotalValue = extractedData.productValue;
   }
 
   return {
