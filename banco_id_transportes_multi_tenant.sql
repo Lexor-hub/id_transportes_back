@@ -134,8 +134,7 @@ CREATE TABLE delivery_notes (
     created_at DATETIME,
     updated_at DATETIME,
     FOREIGN KEY (company_id) REFERENCES companies(id),
-    FOREIGN KEY (client_id) REFERENCES clients(id),
-    UNIQUE KEY unique_nf_per_company (company_id, nf_number)
+    FOREIGN KEY (client_id) REFERENCES clients(id)
 );
 
 -- 8. Tabela de Canhotos de Entrega (agora com company_id)

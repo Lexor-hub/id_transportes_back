@@ -533,14 +533,14 @@ PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Delivery Notes
+-- Delivery Notes (allow duplicated NF numbers per empresa)
 SET @sql = (SELECT IF(
     (SELECT COUNT(*) FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-     WHERE TABLE_SCHEMA = 'id_transportes' 
+     WHERE TABLE_SCHEMA = DATABASE() 
      AND TABLE_NAME = 'delivery_notes' 
-     AND CONSTRAINT_NAME = 'unique_nf_per_company') = 0,
-    'ALTER TABLE delivery_notes ADD CONSTRAINT unique_nf_per_company UNIQUE (company_id, nf_number)',
-    'SELECT "unique_nf_per_company constraint already exists"'
+     AND CONSTRAINT_NAME = 'unique_nf_per_company') > 0,
+    'ALTER TABLE delivery_notes DROP INDEX unique_nf_per_company',
+    'SELECT "unique_nf_per_company constraint already removed"'
 ));
 PREPARE stmt FROM @sql;
 EXECUTE stmt;

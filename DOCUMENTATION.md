@@ -145,7 +145,7 @@ A estrutura do banco de dados MySQL deve suportar as funcionalidades dos micross
 • Propósito: Representa cada item de entrega, geralmente uma nota fiscal.
 • Campos:
     ◦ id (INT, PK, AUTO_INCREMENT)
-    ◦ nf_number (VARCHAR(50), UNIQUE, NOT NULL) - Número da nota fiscal.
+    ◦ nf_number (VARCHAR(50), NOT NULL) - Número da nota fiscal.
     ◦ client_id (INT, FK para clients.id, NULLABLE) - Cliente associado à NF.
     ◦ client_name_extracted (VARCHAR(255)) - Nome do Cliente extraído (se não houver client_id ou para fins de busca).
     ◦ delivery_address (VARCHAR(255), NOT NULL).

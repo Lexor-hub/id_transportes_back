@@ -62,7 +62,7 @@ CREATE TABLE client_users (
 -- 6. Tabela de Notas de Entrega
 CREATE TABLE delivery_notes (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    nf_number VARCHAR(50) UNIQUE NOT NULL,
+    nf_number VARCHAR(50) NOT NULL,
     client_id INT,
     client_name_extracted VARCHAR(255),
     delivery_address VARCHAR(255) NOT NULL,

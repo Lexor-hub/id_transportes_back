@@ -1359,6 +1359,14 @@ app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPE
         details: 'Verifique as credenciais e variaveis DOCUMENT_AI_* no backend.'
       });
     }
+
+    // Adicionado: Verificação explícita para o ID do processador
+    if (OCR_CONFIG.documentAIProcessorId === 'processor-id') {
+      return res.status(503).json({
+        error: 'Configuração do Document AI incompleta.',
+        details: 'A variável de ambiente DOCUMENT_AI_PROCESSOR_ID não foi definida no servidor.'
+      });
+    }
     const processorName = `projects/${OCR_CONFIG.documentAIProjectId}/locations/${OCR_CONFIG.documentAILocation}/processors/${OCR_CONFIG.documentAIProcessorId}`;
     const [result] = await documentAIClient.processDocument({ name: processorName, rawDocument: { content: req.file.buffer.toString('base64'), mimeType: req.file.mimetype } });
     const { document } = result;

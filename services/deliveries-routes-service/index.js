@@ -733,6 +733,11 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
         extractedData.destinatario.enderDest.xEndCompleto
     );
 
+    const normalizedClientAddress =
+      typeof clientAddress === 'string' && clientAddress.trim()
+        ? clientAddress.trim()
+        : 'Não informado';
+
     const merchandiseValue = firstNonEmpty(
       parseDecimal(summaryPayload && summaryPayload.merchandise_value),
       parseDecimal(structuredPayload && structuredPayload.valores && structuredPayload.valores.valor_total_nota),
@@ -767,11 +772,47 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
       parseDateValue(summaryPayload && summaryPayload.delivery_date_expected)
     );
 
+    const sanitizedNfNumber = nfNumber != null ? String(nfNumber).trim() : '';
+    const sanitizedNfKeyRaw = nfKey != null ? String(nfKey).replace(/\s+/g, '') : '';
+    const sanitizedNfKey = sanitizedNfKeyRaw.length ? sanitizedNfKeyRaw : null;
+
+    if (sanitizedNfNumber) {
+      const [existingDeliveries] = await pool.query(
+        'SELECT id FROM delivery_notes WHERE company_id = ? AND nf_number = ? AND ((? IS NOT NULL AND nfe_key = ?) OR (? IS NULL AND (nfe_key IS NULL OR nfe_key = ""))) LIMIT 1',
+        [company_id, sanitizedNfNumber, sanitizedNfKey, sanitizedNfKey, sanitizedNfKey]
+      );
+
+      if (Array.isArray(existingDeliveries) && existingDeliveries.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: 'Já existe uma entrega com este número de NF e chave.',
+        });
+      }
+    }
+
+    if (structuredPayload && structuredPayload.nf_data) {
+      if (sanitizedNfNumber) {
+        structuredPayload.nf_data.numero = sanitizedNfNumber;
+      }
+      if (sanitizedNfKey) {
+        structuredPayload.nf_data.chave = sanitizedNfKey;
+      }
+    }
+
+    if (summaryPayload) {
+      if (sanitizedNfNumber) {
+        summaryPayload.nf_number = sanitizedNfNumber;
+      }
+      if (sanitizedNfKey) {
+        summaryPayload.nfe_key = sanitizedNfKey;
+      }
+    }
+
     const newDelivery = {
       company_id,
-      nf_number: nfNumber,
+      nf_number: sanitizedNfNumber || null,
       client_name_extracted: clientName || null,
-      delivery_address: clientAddress || null,
+      delivery_address: normalizedClientAddress,
       merchandise_value: typeof merchandiseValue === 'number' ? merchandiseValue : 0,
       delivery_volume: deliveryVolume,
       status: requestedStatus || 'PENDING',
@@ -780,7 +821,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
       // check CURDATE() will match newly created deliveries.
       created_at: new Date(),
       emission_date: emissionDate || null,
-      nfe_key: nfKey || null,
+      nfe_key: sanitizedNfKey,
       delivery_date_expected: expectedDate || null,
       notes: notesFromBody,
     };
@@ -1034,6 +1075,75 @@ app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), asy
 
   } catch (error) {
     console.error('Erro ao obter entrega:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  try {
+    const deliveryId = req.params.id;
+    const companyId = req.user.company_id;
+    const userType = (req.user.user_type || req.user.role || '').toUpperCase();
+
+    const [deliveryRows] = await pool.query(
+      'SELECT id, driver_id, created_by_user_id, status FROM delivery_notes WHERE id = ? AND company_id = ?',
+      [deliveryId, companyId]
+    );
+
+    if (deliveryRows.length === 0) {
+      return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    const delivery = deliveryRows[0];
+    const normalizedStatus = (delivery.status || '').toString().toUpperCase();
+    const completedStatuses = new Set(['DELIVERED', 'REALIZADA', 'COMPLETED', 'FINALIZADA']);
+
+    if (completedStatuses.has(normalizedStatus)) {
+      return res.status(400).json({ error: 'Entregas concluídas não podem ser excluídas.' });
+    }
+
+    if (userType === 'DRIVER' || userType === 'MOTORISTA') {
+      const driverTokenId = req.user.user_id ?? req.user.id;
+      const driverIdentifiers = await findDriverIdentifiers(driverTokenId, companyId);
+      const allowedIds = new Set(
+        [driverTokenId, driverIdentifiers && driverIdentifiers.id, driverIdentifiers && driverIdentifiers.user_id]
+          .filter((value) => value !== null && value !== undefined)
+          .map((value) => value.toString())
+      );
+
+      const deliveryDriverId = delivery.driver_id !== null && delivery.driver_id !== undefined
+        ? delivery.driver_id.toString()
+        : null;
+      const createdById = delivery.created_by_user_id !== null && delivery.created_by_user_id !== undefined
+        ? delivery.created_by_user_id.toString()
+        : null;
+
+      const ownsDelivery =
+        (deliveryDriverId && allowedIds.has(deliveryDriverId)) ||
+        (createdById && allowedIds.has(createdById));
+
+      if (!ownsDelivery) {
+        return res.status(403).json({ error: 'Você só pode excluir entregas atribuídas a você.' });
+      }
+    }
+
+    const [receiptRows] = await pool.query(
+      'SELECT id FROM delivery_receipts WHERE delivery_note_id = ? LIMIT 1',
+      [deliveryId]
+    );
+    if (Array.isArray(receiptRows) && receiptRows.length > 0) {
+      return res.status(400).json({ error: 'Remova o comprovante antes de excluir a entrega.' });
+    }
+
+    await pool.query('DELETE FROM delivery_occurrences WHERE delivery_id = ?', [deliveryId]);
+    await pool.query('DELETE FROM route_deliveries WHERE delivery_note_id = ?', [deliveryId]);
+    await pool.query('DELETE FROM tracking_points WHERE delivery_id = ?', [deliveryId]);
+
+    await pool.query('DELETE FROM delivery_notes WHERE id = ? AND company_id = ?', [deliveryId, companyId]);
+
+    res.json({ success: true, message: 'Entrega excluída com sucesso.' });
+  } catch (error) {
+    console.error('Erro ao excluir entrega:', error);
     res.status(500).json({ error: error.message });
   }
 });
