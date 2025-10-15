@@ -293,7 +293,20 @@ const ensureCorsHeaders = (req, res) => {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.use((req, res, next) => {
+  ensureCorsHeaders(req, res);
+  if (req.method === 'OPTIONS') {
+    const requestHeaders = req.headers['access-control-request-headers'];
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    if (requestHeaders) {
+      res.header('Access-Control-Allow-Headers', requestHeaders);
+    } else {
+      res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
+    }
+    return res.sendStatus(204);
+  }
+  next();
+});
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Configurar multer para upload de arquivos (usando memoryStorage para GCS)
