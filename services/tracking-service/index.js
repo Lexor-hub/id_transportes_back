@@ -116,7 +116,7 @@ async function rememberVehicle(driverId, companyId, vehicleId) {
 
   driverVehicleMap.set(driverKey, {
     vehicleId: vehicleIdStr,
-    vehicleLabel,
+    vehicleLabel: vehicleLabel ?? `Veiculo ${vehicleIdStr}`,
     companyId: companyId ? String(companyId) : null,
     updatedAt: new Date().toISOString(),
   });
@@ -320,6 +320,33 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
         res.status(500).json({ error: 'Erro interno ao salvar localização', details: error.message });
     }
 });
+
+app.post('/api/tracking/driver/vehicle', authorize(['DRIVER']), async (req, res) => {
+  try {
+    const vehicleIdValue = req.body?.vehicle_id ?? req.body?.vehicleId ?? req.body?.id;
+    if (vehicleIdValue === undefined || vehicleIdValue === null || vehicleIdValue === '') {
+      return res.status(400).json({ success: false, error: 'vehicle_id obrigatorio' });
+    }
+
+    const company_id = req.user.company_id;
+    const user_id = req.user.id;
+
+    const [driverRows] = await pool.query('SELECT id FROM drivers WHERE user_id = ? AND company_id = ?', [user_id, company_id]);
+
+    if (!Array.isArray(driverRows) || driverRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Motorista nao encontrado para este usuario.' });
+    }
+
+    const driver_id = driverRows[0].id;
+    await rememberVehicle(driver_id, company_id, vehicleIdValue);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Tracking] Falha ao registrar veiculo ativo:', error);
+    res.status(500).json({ success: false, error: 'Erro interno ao registrar veiculo ativo.' });
+  }
+});
+);
 
 /**
  * @swagger
