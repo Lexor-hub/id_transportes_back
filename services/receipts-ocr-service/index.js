@@ -180,9 +180,14 @@ async function uploadToGCS(file, folder = 'receipts') {
   fs.writeFileSync(filePath, file.buffer);
 
   // A URL pública deve apontar para o serviço de entregas.
-  // A variável de ambiente `DELIVERIES_PUBLIC_BASE_URL` deve ser a URL do seu backend na Vercel.
-  const deliveriesBaseUrl = process.env.DELIVERIES_PUBLIC_BASE_URL || process.env.BACKEND_PUBLIC_BASE_URL || 'http://localhost:3003';
-  const publicUrl = `${deliveriesBaseUrl.replace(/\/$/, '')}/uploads/${folder}/${uniqueName}`;
+  // CORREÇÃO: Utiliza variáveis de ambiente para construir a URL pública correta,
+  // evitando o uso de 'localhost' em produção.
+  const publicBaseUrl = 
+    process.env.DELIVERIES_PUBLIC_BASE_URL || 
+    process.env.BACKEND_PUBLIC_BASE_URL || 
+    process.env.API_PUBLIC_BASE_URL || 
+    'http://localhost:3003';
+  const publicUrl = `${publicBaseUrl.replace(/\/$/, '')}/uploads/${folder}/${uniqueName}`;
 
   // gcsPath agora armazena o caminho completo do arquivo local para ser acessado pelo `serveReceiptFile`.
   return { publicUrl, gcsPath: filePath };
