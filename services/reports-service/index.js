@@ -3,6 +3,7 @@ const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { Buffer } = require('buffer');
 
 const app = express();
 app.use(express.json());

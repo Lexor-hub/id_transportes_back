@@ -461,11 +461,19 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
 
     // Verificar se a entrega existe e pertence ao motorista
     const [deliveryRows] = await pool.query(
-      'SELECT * FROM delivery_notes WHERE id = ? AND company_id = ?',
-      [delivery_id, req.user.company_id]);
+      'SELECT company_id FROM delivery_notes WHERE id = ?',
+      [delivery_id]
+    );
 
     if (deliveryRows.length === 0) {
       return res.status(404).json({ error: 'Entrega não encontrada' });
+    }
+
+    const deliveryRow = deliveryRows[0];
+    if (deliveryRow.company_id != null && req.user.company_id != null) {
+      if (String(deliveryRow.company_id) !== String(req.user.company_id)) {
+        return res.status(403).json({ error: 'Entrega não pertence à empresa informada' });
+      }
     }
 
     // Upload para o Google Cloud Storage
