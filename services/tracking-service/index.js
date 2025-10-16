@@ -664,7 +664,8 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     console.error('Erro ao atualizar status:', error);
     res.status(500).json({ error: error.message });
   }
-});
+},);
+
 
 
 
