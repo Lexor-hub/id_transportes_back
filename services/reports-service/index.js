@@ -503,27 +503,34 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         )
     `;
     const [routeRows] = await pool.query(routesSql, [companyId]);
-    const trackingVehicleSql = `
-      SELECT
-        tp.driver_id,
-        tp.vehicle_id,
-        DATE(tp.timestamp) = CURDATE() AS used_today,
-        YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()) AS used_current_month,
-        v.plate,
-        v.model,
-        v.brand,
-        drv.user_id AS driver_user_id
-      FROM tracking_points tp
-      LEFT JOIN vehicles v ON v.id = tp.vehicle_id
-      LEFT JOIN drivers drv ON drv.id = tp.driver_id
-      WHERE tp.company_id = ?
-        AND tp.vehicle_id IS NOT NULL
-        AND (
-          DATE(tp.timestamp) = CURDATE()
-          OR (YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()))
-        )
-    `;
-    const [trackingVehicleRows] = await pool.query(trackingVehicleSql, [companyId]);
+    let trackingVehicleRows = [];
+    try {
+      const trackingVehicleSql = `
+        SELECT
+          tp.driver_id,
+          tp.vehicle_id,
+          DATE(tp.timestamp) = CURDATE() AS used_today,
+          YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()) AS used_current_month,
+          v.plate,
+          v.model,
+          v.brand,
+          drv.user_id AS driver_user_id
+        FROM tracking_points tp
+        LEFT JOIN vehicles v ON v.id = tp.vehicle_id
+        LEFT JOIN drivers drv ON drv.id = tp.driver_id
+        WHERE tp.company_id = ?
+          AND tp.vehicle_id IS NOT NULL
+          AND (
+            DATE(tp.timestamp) = CURDATE()
+            OR (YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()))
+          )
+      `;
+      const [trackingRows] = await pool.query(trackingVehicleSql, [companyId]);
+      trackingVehicleRows = Array.isArray(trackingRows) ? trackingRows : [];
+    } catch (error) {
+      console.warn('[Reports] tracking_points without vehicle_id, skipping vehicle aggregation via tracking.', error && error.message ? error.message : error);
+      trackingVehicleRows = [];
+    }
 
 
     const driverMap = new Map();
