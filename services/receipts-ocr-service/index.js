@@ -292,22 +292,21 @@ const ensureCorsHeaders = (req, res) => {
   res.header('Access-Control-Allow-Credentials', 'true');
 };
 
+// CORREÇÃO: Mover o middleware de CORS para ser o primeiro a ser executado.
+// Isso garante que as requisições OPTIONS (preflight) sejam tratadas antes da autorização.
 app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    // Trata a requisição preflight (OPTIONS) explicitamente
-    const origin = req.headers.origin;
-    if (isOriginAllowed(origin)) {
-      res.header('Access-Control-Allow-Origin', origin);
-    }
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    const requestHeaders = req.headers['access-control-request-headers'];
-    res.header('Access-Control-Allow-Headers', requestHeaders || 'Authorization, Content-Type, Accept');
+  const origin = req.headers.origin;
+  if (isOriginAllowed(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Credentials', 'true');
-    return res.sendStatus(204);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, X-Requested-With');
+  }
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204); // Responde ao preflight
   }
   next();
 });
-app.use(cors(corsOptions));
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Configurar multer para upload de arquivos (usando memoryStorage para GCS)
