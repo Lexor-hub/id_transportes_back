@@ -937,9 +937,17 @@ app.get('/api/reports/canhotos/proxy-view', authorize(['ADMIN', 'SUPERVISOR', 'D
     }
 
     const upstreamResponse = await fetch(targetUrl, { headers });
+
+    const origin = req.headers.origin || '*';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    const skipHeaders = new Set(['access-control-allow-origin', 'access-control-allow-credentials', 'access-control-allow-methods', 'access-control-allow-headers']);
+
     upstreamResponse.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
-      if (lowerKey === 'content-length' || lowerKey === 'transfer-encoding') {
+      if (lowerKey === 'content-length' || lowerKey === 'transfer-encoding' || skipHeaders.has(lowerKey)) {
         return;
       }
       res.setHeader(key, value);
