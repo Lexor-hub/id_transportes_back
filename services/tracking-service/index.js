@@ -347,7 +347,7 @@ app.post('/api/tracking/driver/vehicle', authorize(['DRIVER']), async (req, res)
     res.status(500).json({ success: false, error: 'Erro interno ao registrar veiculo ativo.' });
   }
 });
-);
+
 
 /**
  * @swagger
