@@ -933,12 +933,18 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
         d.*,
         COALESCE(u.full_name, u_resolved.full_name) as driver_name,
         drv.user_id as driver_user_id,
+        CONCAT(v.plate, ' - ', v.model) as vehicle_label,
         c.name as client_name,
         c.address as client_address,
         dr.id AS receipt_id,
         dr.image_url AS receipt_image_url,
         CASE WHEN dr.id IS NOT NULL THEN 1 ELSE 0 END AS has_receipt
       FROM delivery_notes d
+      LEFT JOIN (
+          SELECT driver_id, vehicle_id, MAX(start_datetime) as last_route_start
+          FROM routes WHERE status = 'IN_PROGRESS' GROUP BY driver_id, vehicle_id
+      ) latest_route ON latest_route.driver_id = d.driver_id
+      LEFT JOIN vehicles v ON latest_route.vehicle_id = v.id
       LEFT JOIN users u ON d.driver_id = u.id
       LEFT JOIN drivers drv ON drv.company_id = d.company_id AND drv.id = d.driver_id
       LEFT JOIN users u_resolved ON drv.user_id = u_resolved.id
