@@ -951,14 +951,14 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
 
     if (user.user_type === 'DRIVER' || user.user_type === 'MOTORISTA') {
       const driverUserId = user.user_id ?? user.id;
-      query += ' AND (d.driver_id = ?';
-      params.push(driverUserId);
-      const driverRecordId = driverRowFromToken && driverRowFromToken.id ? String(driverRowFromToken.id) : null;
-      if (driverRecordId && driverRecordId !== driverUserId) {
-        query += ' OR d.driver_id = ?';
-        params.push(driverRecordId);
+      const driverIdentifiers = await findDriverIdentifiers(driverUserId, user.company_id);
+      const possibleIds = new Set([driverUserId, driverIdentifiers?.id, driverIdentifiers?.user_id].filter(Boolean).map(String));
+
+      if (possibleIds.size > 0) {
+        const placeholders = Array.from(possibleIds).map(() => '?').join(',');
+        query += ` AND d.driver_id IN (${placeholders})`;
+        params.push(...Array.from(possibleIds));
       }
-      query += ')';
     } else if (driverFilterId) {
       const driverRow = await findDriverIdentifiers(driverFilterId, user.company_id);
       console.log('[Deliveries] GET /api/deliveries - driver row from filter', { driverFilterId, driverRow });
