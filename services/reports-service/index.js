@@ -25,15 +25,21 @@ const normalizeBaseUrl = (value) => {
 
 const RECEIPTS_BASE_URL = normalizeBaseUrl(receiptsBaseUrlRaw);
 
-const buildReceiptViewUrl = (path) => {
-  if (!path) return null;
-  const sanitized = path.startsWith('/') ? path.slice(1) : path;
-  return `${RECEIPTS_BASE_URL}/api/receipts/view?path=${encodeURIComponent(sanitized)}`;
+const buildReceiptViewUrl = (pathValue) => {
+  if (!pathValue) return null;
+  return `${RECEIPTS_BASE_URL}/api/receipts/view?path=${encodeURIComponent(pathValue)}`;
 };
 
 const resolveReceiptTargetUrl = (rawUrl, rawPath) => {
   if (rawPath) {
-    return buildReceiptViewUrl(rawPath);
+    const directUrl = buildReceiptViewUrl(rawPath);
+    if (directUrl) {
+      return directUrl;
+    }
+    if (RECEIPTS_BASE_URL) {
+      return `${RECEIPTS_BASE_URL}/api/receipts/view?path=${encodeURIComponent(rawPath)}`;
+    }
+    return rawPath;
   }
 
   if (!rawUrl) {
@@ -194,11 +200,9 @@ app.get('/api/dashboard/kpis', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), asy
     const { company_id } = req.user;
     const today = new Date().toISOString().slice(0, 10);
 
-    // Define an explicit "is today" expression so we don't accidentally prefer delivery_date_expected
-    // when it was intentionally set to another date. Rule: a delivery is "today" when
-    // - delivery_date_expected is set and equals CURDATE(), OR
-    // - delivery_date_expected is NULL and DATE(created_at) = CURDATE()
-    const isTodayExpr = `((dn.delivery_date_expected IS NOT NULL AND DATE(dn.delivery_date_expected) = CURDATE()) OR (dn.delivery_date_expected IS NULL AND DATE(dn.created_at) = CURDATE()))`;
+    // CORREÇÃO: Unifica a lógica de "entrega do dia" para ser consistente com os relatórios.
+    // Uma entrega é considerada "do dia" se sua data de conclusão ou criação for hoje.
+    const isTodayExpr = `DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE()`;
 
     const deliveryStatsQueries = [
       {

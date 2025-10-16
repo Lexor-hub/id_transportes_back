@@ -41,7 +41,18 @@ const RECEIPTS_PUBLIC_BASE_URL =
 
 const buildReceiptViewUrl = (storagePath) => {
   if (!storagePath) return null;
-  const base = RECEIPTS_PUBLIC_BASE_URL || 'http://localhost:3004';
+  const base = RECEIPTS_PUBLIC_BASE_URL
+    || process.env.RECEIPTS_SERVICE_PUBLIC_URL
+    || process.env.RECEIPTS_SERVICE_URL
+    || process.env.BACKEND_PUBLIC_BASE_URL
+    || process.env.API_PUBLIC_BASE_URL
+    || process.env.API_BASE_URL
+    || '';
+
+  if (!base) {
+    return null;
+  }
+
   const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
   return `${normalizedBase}/api/receipts/view?path=${encodeURIComponent(storagePath)}`;
 };
@@ -180,7 +191,8 @@ async function uploadToGCS(file, folder = 'receipts') {
   fs.writeFileSync(filePath, file.buffer);
 
   // A URL pública passa a utilizar o endpoint de visualização do próprio serviço de recibos.
-  const publicUrl = buildReceiptViewUrl(filePath);
+  const viewUrl = buildReceiptViewUrl(filePath);
+  const publicUrl = viewUrl || filePath;
 
   // gcsPath mantém o caminho completo para uso interno do `serveReceiptFile`.
   return { publicUrl, gcsPath: filePath };
