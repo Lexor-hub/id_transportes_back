@@ -390,19 +390,20 @@ async function serveReceiptFile(req, res, rawParam) {
       return res.status(400).send('Caminho do arquivo n√£o informado.');
     }
 
+    const localPath = gcsPath;
+    if (fs.existsSync(localPath)) {
+      return res.sendFile(localPath);
+    }
+
     if (!bucket || !hasGoogleCredentials) {
-      const localPath = gcsPath;
-      if (fs.existsSync(localPath)) {
-        return res.sendFile(localPath);
-      }
-      return res.status(404).send('Arquivo local n√£o encontrado.');
+      return res.status(404).send('Arquivo local n„o encontrado.');
     }
 
     const file = bucket.file(gcsPath);
     const [exists] = await file.exists();
 
     if (!exists) {
-      return res.status(404).send('Arquivo n√£o encontrado no Google Cloud Storage.');
+      return res.status(404).send('Arquivo n„o encontrado no Google Cloud Storage.');
     }
 
     file.createReadStream()
