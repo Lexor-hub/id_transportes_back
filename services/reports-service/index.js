@@ -503,6 +503,28 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         )
     `;
     const [routeRows] = await pool.query(routesSql, [companyId]);
+    const trackingVehicleSql = `
+      SELECT
+        tp.driver_id,
+        tp.vehicle_id,
+        DATE(tp.timestamp) = CURDATE() AS used_today,
+        YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()) AS used_current_month,
+        v.plate,
+        v.model,
+        v.brand,
+        drv.user_id AS driver_user_id
+      FROM tracking_points tp
+      LEFT JOIN vehicles v ON v.id = tp.vehicle_id
+      LEFT JOIN drivers drv ON drv.id = tp.driver_id
+      WHERE tp.company_id = ?
+        AND tp.vehicle_id IS NOT NULL
+        AND (
+          DATE(tp.timestamp) = CURDATE()
+          OR (YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()))
+        )
+    `;
+    const [trackingVehicleRows] = await pool.query(trackingVehicleSql, [companyId]);
+
 
     const driverMap = new Map();
 
@@ -648,6 +670,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       const labelParts = [];
       if (vehicleRow.plate) labelParts.push(vehicleRow.plate);
       if (vehicleRow.model) labelParts.push(vehicleRow.model);
+      if (vehicleRow.brand) labelParts.push(vehicleRow.brand);
       const label = labelParts.length ? labelParts.join(' - ') : 'Veiculo nao identificado';
 
       const targetBucket = bucket === 'today' ? entry.vehiclesTodaySet : entry.vehiclesMonthSet;
@@ -662,25 +685,30 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       }
     };
 
-    routeRows.forEach((row) => {
-      const entry = ensureDriverEntry({
-        driverRecordId: row.driver_id,
-        driverUserId: row.driver_user_id,
-        rawDriverId: row.driver_user_id,
-        name: null,
-        username: null,
-      });
-      if (!entry) {
-        return;
-      }
+    const registerVehicleUsage = (rows) => {
+      rows.forEach((row) => {
+        const entry = ensureDriverEntry({
+          driverRecordId: row.driver_id,
+          driverUserId: row.driver_user_id,
+          rawDriverId: row.driver_user_id ?? row.driver_id,
+          name: null,
+          username: null,
+        });
+        if (!entry) {
+          return;
+        }
 
-      if (toBooleanLike(row.used_today)) {
-        registerVehicle(entry, 'today', row);
-      }
-      if (toBooleanLike(row.used_current_month)) {
-        registerVehicle(entry, 'month', row);
-      }
-    });
+        if (toBooleanLike(row.used_today)) {
+          registerVehicle(entry, 'today', row);
+        }
+        if (toBooleanLike(row.used_current_month)) {
+          registerVehicle(entry, 'month', row);
+        }
+      });
+    };
+
+    registerVehicleUsage(routeRows);
+    registerVehicleUsage(trackingVehicleRows);
 
     let topEntry = null;
 
