@@ -77,6 +77,22 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Armazenar conexões WebSocket por empresa
@@ -309,9 +325,9 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
 
         // Insere a localização na tabela tracking_points
         await pool.execute(
-            `INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [driver_id, company_id, parsedLatitude, parsedLongitude, sanitizedAccuracy, parsedSpeed, parsedHeading, parsedDeliveryId]
+            `INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [driver_id, company_id, vehicle_id ? Number(vehicle_id) : null, parsedLatitude, parsedLongitude, sanitizedAccuracy, parsedSpeed, parsedHeading, parsedDeliveryId]
         );
 
         console.log('[Tracking] Localização persistida', { driver_id, company_id });
