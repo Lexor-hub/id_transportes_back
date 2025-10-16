@@ -2,10 +2,53 @@
 const pool = require('../../shared/db');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: '*' }));
+
+const receiptsBaseUrlRaw =
+  process.env.RECEIPTS_SERVICE_INTERNAL_URL ||
+  process.env.RECEIPTS_SERVICE_URL ||
+  process.env.RECEIPTS_SERVICE_PUBLIC_URL ||
+  process.env.RECEIPTS_PUBLIC_BASE_URL ||
+  process.env.RECEIPTS_API_URL ||
+  'http://localhost:3004';
+
+const normalizeBaseUrl = (value) => {
+  if (!value) return '';
+  return value.endsWith('/') ? value.slice(0, -1) : value;
+};
+
+const RECEIPTS_BASE_URL = normalizeBaseUrl(receiptsBaseUrlRaw);
+
+const buildReceiptViewUrl = (path) => {
+  if (!path) return null;
+  const sanitized = path.startsWith('/') ? path.slice(1) : path;
+  return `${RECEIPTS_BASE_URL}/api/receipts/view?path=${encodeURIComponent(sanitized)}`;
+};
+
+const resolveReceiptTargetUrl = (rawUrl, rawPath) => {
+  if (rawPath) {
+    return buildReceiptViewUrl(rawPath);
+  }
+
+  if (!rawUrl) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    const queryPath = parsed.searchParams.get('path');
+    if (queryPath) {
+      return buildReceiptViewUrl(queryPath);
+    }
+    return parsed.href;
+  } catch {
+    return buildReceiptViewUrl(rawUrl);
+  }
+};
 
 const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a';
 
@@ -495,6 +538,38 @@ app.get('/api/reports/canhotos', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), a
       responseBody.error_details = String(error.stack);
     }
     res.status(500).json(responseBody);
+  }
+});
+
+app.get('/api/reports/canhotos/proxy-view', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
+  const rawPathParam = typeof req.query?.path === 'string' ? req.query.path.trim() : '';
+  const rawUrlParam = typeof req.query?.url === 'string' ? req.query.url.trim() : '';
+  const targetUrl = resolveReceiptTargetUrl(rawUrlParam || null, rawPathParam || null);
+
+  if (!targetUrl) {
+    return res.status(400).json({ success: false, error: 'Parametros invalidos para localizar o canhoto.' });
+  }
+
+  try {
+    const headers = {};
+    if (req.headers.authorization) {
+      headers.Authorization = req.headers.authorization;
+    }
+
+    const upstreamResponse = await fetch(targetUrl, { headers });
+    upstreamResponse.headers.forEach((value, key) => {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === 'content-length' || lowerKey === 'transfer-encoding') {
+        return;
+      }
+      res.setHeader(key, value);
+    });
+
+    const buffer = await upstreamResponse.arrayBuffer();
+    res.status(upstreamResponse.status).send(Buffer.from(buffer));
+  } catch (error) {
+    console.error('Erro ao proxy do canhoto:', error);
+    res.status(500).json({ success: false, error: 'Falha ao recuperar o canhoto.' });
   }
 });
 
