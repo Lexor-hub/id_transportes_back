@@ -64,14 +64,13 @@ const corsOptions = {
 
     const isAllowed = whitelist.some((pattern) =>
       pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
-    );
+    ) || /\.vercel\.app$/i.test(origin) || /\.railway\.app$/i.test(origin);
 
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      console.error(`[Tracking CORS] Origin '${origin}' not allowed.`);
-      callback(new Error('Not allowed by CORS'));
+    if (!isAllowed) {
+      console.warn(`[Tracking CORS] Allowing unlisted origin '${origin}'. Configure CORS_ALLOWED_ORIGINS if this is unintended.`);
     }
+
+    callback(null, true);
   },
   credentials: true,
 };
