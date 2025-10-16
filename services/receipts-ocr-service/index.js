@@ -177,7 +177,7 @@ async function uploadToGCS(file, folder = 'receipts') {
   
   const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '.jpg')}`;
   const filePath = path.join(uploadDir, uniqueName);
-  fs.writeFileSync(file.buffer, filePath);
+  fs.writeFileSync(filePath, file.buffer);
 
   // A URL pública deve apontar para o serviço de entregas.
   // A variável de ambiente `DELIVERIES_PUBLIC_BASE_URL` deve ser a URL do seu backend na Vercel.

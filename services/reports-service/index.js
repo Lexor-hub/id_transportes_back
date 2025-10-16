@@ -402,7 +402,6 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         u.full_name AS driver_name,
         u.username AS driver_username,
         u.email AS driver_email,
-        u.phone AS driver_phone
       FROM drivers d
       LEFT JOIN users u ON u.id = d.user_id
       WHERE d.company_id = ?`,
