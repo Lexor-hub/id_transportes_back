@@ -28,11 +28,135 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:8080', credentials: true }));
+const defaultOrigins = [
+  'http://localhost:8080',
+  'http://localhost:5173',
+  'http://localhost:8081',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8081',
+];
+
+const envOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const wildcardOrigins = envOrigins.filter((origin) => origin.includes('*'));
+const explicitOrigins = envOrigins.filter((origin) => !origin.includes('*'));
+
+const allowedOriginPatterns = [
+  /^https:\/\/transportes-.*\.vercel\.app$/,
+  /^https:\/\/idtransportes-.*\.vercel\.app$/,
+  /^https:\/\/trasportes-.*\.vercel\.app$/,
+  ...wildcardOrigins.map((pattern) => {
+    const escaped = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }),
+];
+
+const whitelist = [...defaultOrigins, ...explicitOrigins, ...allowedOriginPatterns];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    const isAllowed = whitelist.some((pattern) =>
+      pattern instanceof RegExp ? pattern.test(origin) : pattern === origin
+    );
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.error(`[Tracking CORS] Origin '${origin}' not allowed.`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+};
+
+app.use(cors(corsOptions));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Armazenar conexões WebSocket por empresa
 const connections = new Map();
+
+const driverVehicleMap = new Map(); // driver_id -> { vehicleId, vehicleLabel, companyId, updatedAt }
+async function persistTrackingPoint({ driverId, companyId, vehicleId, latitude, longitude, accuracy, speed, heading, deliveryId }) {
+  const fallbackQuery = `INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+  const fallbackParams = [driverId, companyId, latitude, longitude, accuracy, speed, heading, deliveryId];
+
+  if (vehicleId !== null && vehicleId !== undefined) {
+    try {
+      await pool.execute(`INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [driverId, companyId, Number(vehicleId), latitude, longitude, accuracy, speed, heading, deliveryId]);
+      return;
+    } catch (error) {
+      if (error && (error.code === 'ER_BAD_FIELD_ERROR' || error.code === 'ER_WRONG_VALUE_COUNT_ON_ROW')) {
+        console.warn('[Tracking] Tabela tracking_points sem coluna vehicle_id. Gravando sem o campo.');
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  await pool.execute(fallbackQuery, fallbackParams);
+}
+
+
+async function rememberVehicle(driverId, companyId, vehicleId) {
+  if (vehicleId === undefined || vehicleId === null || vehicleId === '') {
+    return;
+  }
+
+  const driverKey = String(driverId);
+  const vehicleIdStr = String(vehicleId);
+  const existing = driverVehicleMap.get(driverKey);
+  if (existing && existing.vehicleId === vehicleIdStr) {
+    driverVehicleMap.set(driverKey, { ...existing, updatedAt: new Date().toISOString() });
+    return;
+  }
+
+  let vehicleLabel = null;
+  try {
+    const [rows] = await pool.query('SELECT plate, model, brand FROM vehicles WHERE id = ? LIMIT 1', [vehicleIdStr]);
+    if (Array.isArray(rows) && rows.length > 0) {
+      const record = rows[0];
+      const parts = [];
+      if (record.plate) parts.push(String(record.plate).toUpperCase());
+      if (record.model) parts.push(String(record.model));
+      if (parts.length === 0 && record.brand) parts.push(String(record.brand));
+      if (parts.length) {
+        vehicleLabel = parts.join(' - ');
+      }
+    }
+  } catch (error) {
+    console.warn('[Tracking] Failed to resolve vehicle information:', error.message);
+  }
+
+  driverVehicleMap.set(driverKey, {
+    vehicleId: vehicleIdStr,
+    vehicleLabel: vehicleLabel ?? `Veiculo ${vehicleIdStr}`,
+    companyId: companyId ? String(companyId) : null,
+    updatedAt: new Date().toISOString(),
+  });
+}
 
 // Middleware de autenticação
 function authorize(roles = []) {
@@ -105,21 +229,25 @@ wss.on('connection', (ws, req) => {
 // Função para salvar localização no banco
 async function saveLocation(data) {
   try {
-    await pool.query(`
-      INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
-    `, [
-      data.driver_id,
-      data.company_id,
-      data.location.latitude,
-      data.location.longitude,
-      data.location.accuracy || null,
-      data.location.speed || null,
-      data.location.heading || null,
-      data.delivery_id || null
-    ]);
+    await persistTrackingPoint({
+      driverId: data.driver_id,
+      companyId: data.company_id,
+      vehicleId: data.vehicle_id ?? null,
+      latitude: data.location.latitude,
+      longitude: data.location.longitude,
+      accuracy: data.location.accuracy || null,
+      speed: data.location.speed || null,
+      heading: data.location.heading || null,
+      deliveryId: data.delivery_id || null,
+    });
   } catch (error) {
-    console.error('Erro ao salvar localização:', error);
+    console.error('Erro ao salvar localizacao:', error);
+  }
+
+  try {
+    await rememberVehicle(data.driver_id, data.company_id, data.vehicle_id);
+  } catch (error) {
+    console.warn('[Tracking] Nao foi possivel atualizar o veiculo do motorista:', error && error.message ? error.message : error);
   }
 }
 
@@ -168,7 +296,8 @@ function broadcastToCompany(companyId, message) {
  */
 app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
     try {
-        const { latitude, longitude, accuracy, speed, heading, delivery_id } = req.body;
+        const { latitude, longitude, accuracy, speed, heading, delivery_id, vehicle_id: vehicleIdBody, vehicleId } = req.body;
+        const vehicle_id = vehicleIdBody ?? vehicleId ?? null;
         const company_id = req.user.company_id;
         const user_id = req.user.id; // Pega o user_id do token JWT
 
@@ -180,6 +309,9 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
             return res.status(404).json({ error: 'Motorista não encontrado para este usuário.' });
         }
         const driver_id = driverRows[0].id; // Este é o ID correto para a tabela tracking_points
+        if (vehicle_id !== null && vehicle_id !== undefined) {
+            await rememberVehicle(driver_id, company_id, vehicle_id);
+        }
 
         const parsedLatitude = latitude === undefined || latitude === null ? null : Number(latitude);
         const parsedLongitude = longitude === undefined || longitude === null ? null : Number(longitude);
@@ -209,11 +341,17 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
         }
 
         // Insere a localização na tabela tracking_points
-        await pool.execute(
-            `INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [driver_id, company_id, parsedLatitude, parsedLongitude, sanitizedAccuracy, parsedSpeed, parsedHeading, parsedDeliveryId]
-        );
+        await persistTrackingPoint({
+          driverId: driver_id,
+          companyId: company_id,
+          vehicleId: vehicle_id ?? null,
+          latitude: parsedLatitude,
+          longitude: parsedLongitude,
+          accuracy: sanitizedAccuracy,
+          speed: parsedSpeed,
+          heading: parsedHeading,
+          deliveryId: parsedDeliveryId,
+        });
 
         console.log('[Tracking] Localização persistida', { driver_id, company_id });
         res.status(200).json({ success: true, message: 'Localização salva com sucesso' });
@@ -222,6 +360,33 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
         res.status(500).json({ error: 'Erro interno ao salvar localização', details: error.message });
     }
 });
+
+app.post('/api/tracking/driver/vehicle', authorize(['DRIVER']), async (req, res) => {
+  try {
+    const vehicleIdValue = req.body?.vehicle_id ?? req.body?.vehicleId ?? req.body?.id;
+    if (vehicleIdValue === undefined || vehicleIdValue === null || vehicleIdValue === '') {
+      return res.status(400).json({ success: false, error: 'vehicle_id obrigatorio' });
+    }
+
+    const company_id = req.user.company_id;
+    const user_id = req.user.id;
+
+    const [driverRows] = await pool.query('SELECT id FROM drivers WHERE user_id = ? AND company_id = ?', [user_id, company_id]);
+
+    if (!Array.isArray(driverRows) || driverRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Motorista nao encontrado para este usuario.' });
+    }
+
+    const driver_id = driverRows[0].id;
+    await rememberVehicle(driver_id, company_id, vehicleIdValue);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Tracking] Falha ao registrar veiculo ativo:', error);
+    res.status(500).json({ success: false, error: 'Erro interno ao registrar veiculo ativo.' });
+  }
+});
+
 
 /**
  * @swagger
@@ -241,6 +406,7 @@ app.get('/api/tracking/drivers/current-locations', authorize(['ADMIN', 'SUPERVIS
       SELECT 
         d.id as driver_id,
         u.full_name as driver_name,
+        tp.vehicle_id as vehicle_id,
         tp.latitude,
         tp.longitude,
         tp.accuracy,
@@ -276,6 +442,77 @@ app.get('/api/tracking/drivers/current-locations', authorize(['ADMIN', 'SUPERVIS
         AND tp.longitude IS NOT NULL
       ORDER BY tp.timestamp DESC
     `, [req.user.company_id, req.user.company_id]);
+
+    const vehicleIdsToLookup = new Set();
+    const nowIso = new Date().toISOString();
+
+    for (const row of rows) {
+      const driverKey = String(row.driver_id);
+      const candidateVehicleId = row.vehicle_id != null ? String(row.vehicle_id) : null;
+      const mapping = driverVehicleMap.get(driverKey);
+
+      if (mapping && (!mapping.companyId || mapping.companyId === String(req.user.company_id))) {
+        row.vehicle_id = mapping.vehicleId ?? candidateVehicleId ?? null;
+        row.vehicle_label = mapping.vehicleLabel ?? null;
+
+        if (!row.vehicle_label && row.vehicle_id) {
+          vehicleIdsToLookup.add(String(row.vehicle_id));
+        }
+
+        if (!mapping.vehicleLabel && candidateVehicleId && mapping.vehicleId !== candidateVehicleId) {
+          driverVehicleMap.set(driverKey, { ...mapping, vehicleId: candidateVehicleId, updatedAt: nowIso });
+        }
+      } else {
+        row.vehicle_label = null;
+        if (candidateVehicleId) {
+          row.vehicle_id = candidateVehicleId;
+          vehicleIdsToLookup.add(candidateVehicleId);
+          driverVehicleMap.set(driverKey, {
+            vehicleId: candidateVehicleId,
+            vehicleLabel: null,
+            companyId: req.user.company_id ? String(req.user.company_id) : null,
+            updatedAt: nowIso,
+          });
+        } else {
+          row.vehicle_id = null;
+        }
+      }
+    }
+
+    if (vehicleIdsToLookup.size > 0) {
+      try {
+        const [vehicleRows] = await pool.query(
+          'SELECT id, plate, model, brand FROM vehicles WHERE id IN (?)',
+          [Array.from(vehicleIdsToLookup)]
+        );
+        const labelMap = new Map();
+        if (Array.isArray(vehicleRows)) {
+          for (const vehicle of vehicleRows) {
+            const parts = [];
+            if (vehicle.plate) parts.push(String(vehicle.plate).toUpperCase());
+            if (vehicle.model) parts.push(String(vehicle.model));
+            if (parts.length === 0 && vehicle.brand) parts.push(String(vehicle.brand));
+            const label = parts.length ? parts.join(' - ') : `Veiculo ${vehicle.id}`;
+            labelMap.set(String(vehicle.id), label);
+          }
+        }
+
+        for (const row of rows) {
+          if (row.vehicle_id) {
+            const label = labelMap.get(String(row.vehicle_id));
+            if (label) {
+              row.vehicle_label = label;
+              const mapping = driverVehicleMap.get(String(row.driver_id));
+              if (mapping) {
+                driverVehicleMap.set(String(row.driver_id), { ...mapping, vehicleLabel: label });
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('[Tracking] Falha ao buscar dados dos veiculos:', error.message);
+      }
+    }
 
     console.log(`[Tracking] Consulta executada. ${rows.length} localizações encontradas.`);
     if (rows.length > 0) {
@@ -396,12 +633,11 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
 
     console.log(`[Tracking] Recebida atualização de status para driver ${driverId} com status: ${frontendStatus}`);
 
-    // Mapeia o status do frontend para o status do banco de dados
     const statusMap = {
       online: 'active',
       offline: 'inactive',
-      idle: 'inactive', 
-      busy: 'active', 
+      idle: 'inactive',
+      busy: 'active',
     };
 
     const dbStatus = statusMap[frontendStatus];
@@ -418,13 +654,14 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     );
 
     if (driverRows.length === 0) {
+      // Tenta encontrar o motorista pelo user_id do token se não encontrar pelo driverId
       const [rowsByUser] = await pool.query(
         'SELECT * FROM drivers WHERE user_id = ? AND company_id = ?',
-        [req.user.user_id, companyId]
+        [req.user.id, companyId] // <-- CORRIGIDO: de req.user.user_id para req.user.id
       );
 
       if (rowsByUser.length === 0) {
-        console.warn('[Tracking] Driver não encontrado para atualização de status', { driverId, userId: req.user.user_id });
+        console.warn('[Tracking] Driver não encontrado para atualização de status', { driverId, userId: req.user.id }); // <-- CORRIGIDO
         return res.status(404).json({ error: 'Motorista não encontrado' });
       }
 
@@ -440,7 +677,7 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     broadcastToCompany(companyId, {
       type: 'driver_status',
       driver_id: driverIdToUpdate,
-      status: dbStatus, // Envia o status do DB para consistência
+      status: dbStatus,
       timestamp: new Date().toISOString()
     });
 
@@ -449,13 +686,13 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
   } catch (error) {
     console.error('Erro ao atualizar status:', error);
     res.status(500).json({ error: error.message });
-  }
-});
-
+  } 
+}); 
 
 
 if (require.main === module) {
-  server.listen(3005, () => console.log('Tracking Service rodando na porta 3005'));
+  const PORT = Number(process.env.TRACKING_SERVICE_PORT || process.env.TRACKING_PORT || process.env.PORT || 3005);
+  server.listen(PORT, () => console.log(`Tracking Service rodando na porta ${PORT}`));
 }
 
 module.exports = app; 
