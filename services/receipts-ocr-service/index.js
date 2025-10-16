@@ -179,17 +179,10 @@ async function uploadToGCS(file, folder = 'receipts') {
   const filePath = path.join(uploadDir, uniqueName);
   fs.writeFileSync(filePath, file.buffer);
 
-  // A URL pÃºblica deve apontar para o serviÃ§o de entregas.
-  // CORREÃ‡ÃƒO: Utiliza variÃ¡veis de ambiente para construir a URL pÃºblica correta,
-  // evitando o uso de 'localhost' em produÃ§Ã£o.
-  const publicBaseUrl = 
-    process.env.DELIVERIES_PUBLIC_BASE_URL || 
-    process.env.BACKEND_PUBLIC_BASE_URL || 
-    process.env.API_PUBLIC_BASE_URL || 
-    'http://localhost:3003';
-  const publicUrl = `${publicBaseUrl.replace(/\/$/, '')}/uploads/${folder}/${uniqueName}`;
+  // A URL pública passa a utilizar o endpoint de visualização do próprio serviço de recibos.
+  const publicUrl = buildReceiptViewUrl(filePath);
 
-  // gcsPath agora armazena o caminho completo do arquivo local para ser acessado pelo `serveReceiptFile`.
+  // gcsPath mantém o caminho completo para uso interno do `serveReceiptFile`.
   return { publicUrl, gcsPath: filePath };
 
 

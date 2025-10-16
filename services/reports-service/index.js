@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const { Buffer } = require('buffer');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -45,6 +46,16 @@ const resolveReceiptTargetUrl = (rawUrl, rawPath) => {
     if (queryPath) {
       return buildReceiptViewUrl(queryPath);
     }
+
+    const hostname = parsed.hostname || '';
+    if (['localhost', '127.0.0.1', '::1'].includes(hostname)) {
+      if (parsed.pathname && parsed.pathname.startsWith('/uploads/')) {
+        const sanitized = parsed.pathname.replace(/^\/+/, '');
+        const absoluteUploadPath = path.resolve(__dirname, '../deliveries-routes-service', sanitized);
+        return buildReceiptViewUrl(absoluteUploadPath);
+      }
+    }
+
     return parsed.href;
   } catch {
     return buildReceiptViewUrl(rawUrl);
@@ -473,7 +484,6 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         YEAR(r.start_datetime) = YEAR(CURDATE()) AND MONTH(r.start_datetime) = MONTH(CURDATE()) AS used_current_month,
         v.plate,
         v.model,
-        v.brand,
         drv.user_id AS driver_user_id
       FROM routes r
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
@@ -642,7 +652,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
           vehicleId: vehicleRow.vehicle_id != null ? toSafeString(vehicleRow.vehicle_id) : null,
           plate: vehicleRow.plate || null,
           model: vehicleRow.model || null,
-          brand: vehicleRow.brand || null,
+          brand: null, // A coluna 'brand' não existe na tabela 'vehicles'
           label,
         });
       }
