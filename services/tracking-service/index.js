@@ -194,11 +194,12 @@ wss.on('connection', (ws, req) => {
 async function saveLocation(data) {
   try {
     await pool.query(`
-      INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
     `, [
       data.driver_id,
       data.company_id,
+      data.vehicle_id || null,
       data.location.latitude,
       data.location.longitude,
       data.location.accuracy || null,
@@ -366,6 +367,7 @@ app.get('/api/tracking/drivers/current-locations', authorize(['ADMIN', 'SUPERVIS
       SELECT 
         d.id as driver_id,
         u.full_name as driver_name,
+        tp.vehicle_id as vehicle_id,
         tp.latitude,
         tp.longitude,
         tp.accuracy,
@@ -403,18 +405,38 @@ app.get('/api/tracking/drivers/current-locations', authorize(['ADMIN', 'SUPERVIS
     `, [req.user.company_id, req.user.company_id]);
 
     const vehicleIdsToLookup = new Set();
+    const nowIso = new Date().toISOString();
+
     for (const row of rows) {
       const driverKey = String(row.driver_id);
+      const candidateVehicleId = row.vehicle_id != null ? String(row.vehicle_id) : null;
       const mapping = driverVehicleMap.get(driverKey);
+
       if (mapping && (!mapping.companyId || mapping.companyId === String(req.user.company_id))) {
-        row.vehicle_id = mapping.vehicleId ?? null;
+        row.vehicle_id = mapping.vehicleId ?? candidateVehicleId ?? null;
         row.vehicle_label = mapping.vehicleLabel ?? null;
+
         if (!row.vehicle_label && row.vehicle_id) {
           vehicleIdsToLookup.add(String(row.vehicle_id));
         }
+
+        if (!mapping.vehicleLabel && candidateVehicleId && mapping.vehicleId !== candidateVehicleId) {
+          driverVehicleMap.set(driverKey, { ...mapping, vehicleId: candidateVehicleId, updatedAt: nowIso });
+        }
       } else {
-        row.vehicle_id = null;
         row.vehicle_label = null;
+        if (candidateVehicleId) {
+          row.vehicle_id = candidateVehicleId;
+          vehicleIdsToLookup.add(candidateVehicleId);
+          driverVehicleMap.set(driverKey, {
+            vehicleId: candidateVehicleId,
+            vehicleLabel: null,
+            companyId: req.user.company_id ? String(req.user.company_id) : null,
+            updatedAt: nowIso,
+          });
+        } else {
+          row.vehicle_id = null;
+        }
       }
     }
 
