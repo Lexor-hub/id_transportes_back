@@ -386,6 +386,376 @@ app.get('/api/dashboard/kpis', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), asy
  * GET /api/reports/canhotos
  * Retorna entregas finalizadas com informações do motorista, cliente, data e link para a imagem do canhoto (se houver).
  */
+
+app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (req, res) => {
+  try {
+    const { company_id: companyId } = req.user || {};
+    if (!companyId) {
+      return res.status(400).json({ success: false, error: 'Empresa nao informada no token.' });
+    }
+
+    const [driverRows] = await pool.query(
+      `SELECT
+        d.id AS driver_id,
+        d.user_id AS driver_user_id,
+        u.full_name AS driver_name,
+        u.username AS driver_username,
+        u.email AS driver_email,
+        u.phone AS driver_phone
+      FROM drivers d
+      LEFT JOIN users u ON u.id = d.user_id
+      WHERE d.company_id = ?`,
+      [companyId]
+    );
+
+    const deliveriesSql = `
+      SELECT
+        dn.id,
+        dn.driver_id AS raw_driver_id,
+        COALESCE(dn.delivery_date_actual, dn.created_at) AS delivery_datetime,
+        DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE() AS is_today,
+        YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
+          AND MONTH(COALESCE(dn.delivery_date_actual, dn.created_at)) = MONTH(CURDATE()) AS is_current_month,
+        drv.id AS driver_record_id,
+        drv.user_id AS driver_user_id,
+        u_drv.full_name AS driver_record_name,
+        u_drv.username AS driver_record_username,
+        u_direct.full_name AS direct_name,
+        u_direct.username AS direct_username
+      FROM delivery_notes dn
+      LEFT JOIN drivers drv ON drv.id = dn.driver_id
+      LEFT JOIN users u_drv ON u_drv.id = drv.user_id
+      LEFT JOIN users u_direct ON u_direct.id = dn.driver_id
+      WHERE dn.company_id = ?
+        AND (
+          DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE()
+          OR (
+            YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
+            AND MONTH(COALESCE(dn.delivery_date_actual, dn.created_at)) = MONTH(CURDATE())
+          )
+        )
+    `;
+    const [deliveryRows] = await pool.query(deliveriesSql, [companyId]);
+
+    const occurrencesSql = `
+      SELECT
+        do.id,
+        do.driver_id AS occurrence_driver_id,
+        do.created_at,
+        DATE(do.created_at) = CURDATE() AS is_today,
+        YEAR(do.created_at) = YEAR(CURDATE()) AND MONTH(do.created_at) = MONTH(CURDATE()) AS is_current_month,
+        dn.driver_id AS related_delivery_driver_id,
+        drv.id AS driver_record_id,
+        drv.user_id AS driver_user_id,
+        u_drv.full_name AS driver_record_name,
+        u_direct.full_name AS direct_name
+      FROM delivery_occurrences do
+      LEFT JOIN delivery_notes dn ON dn.id = do.delivery_id
+      LEFT JOIN drivers drv ON drv.id = dn.driver_id
+      LEFT JOIN users u_drv ON u_drv.id = drv.user_id
+      LEFT JOIN users u_direct ON u_direct.id = do.driver_id
+      WHERE do.company_id = ?
+        AND (
+          DATE(do.created_at) = CURDATE()
+          OR (
+            YEAR(do.created_at) = YEAR(CURDATE())
+            AND MONTH(do.created_at) = MONTH(CURDATE())
+          )
+        )
+    `;
+    const [occurrenceRows] = await pool.query(occurrencesSql, [companyId]);
+
+    const routesSql = `
+      SELECT
+        r.driver_id,
+        r.vehicle_id,
+        DATE(r.start_datetime) = CURDATE() AS used_today,
+        YEAR(r.start_datetime) = YEAR(CURDATE()) AND MONTH(r.start_datetime) = MONTH(CURDATE()) AS used_current_month,
+        v.plate,
+        v.model,
+        v.brand,
+        drv.user_id AS driver_user_id
+      FROM routes r
+      LEFT JOIN vehicles v ON v.id = r.vehicle_id
+      LEFT JOIN drivers drv ON drv.id = r.driver_id
+      WHERE r.company_id = ?
+        AND r.vehicle_id IS NOT NULL
+        AND (
+          DATE(r.start_datetime) = CURDATE()
+          OR (
+            YEAR(r.start_datetime) = YEAR(CURDATE())
+            AND MONTH(r.start_datetime) = MONTH(CURDATE())
+          )
+        )
+    `;
+    const [routeRows] = await pool.query(routesSql, [companyId]);
+
+    const driverMap = new Map();
+
+    const toSafeString = (value) => {
+      if (value === null || value === undefined) return null;
+      return String(value);
+    };
+
+    const toBooleanLike = (value) => {
+      if (value === null || value === undefined) return false;
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'number') return value === 1;
+      if (typeof value === 'string') return Number(value) === 1;
+      if (Buffer.isBuffer(value)) return value.length ? value[0] === 1 : false;
+      return Boolean(value);
+    };
+
+    const ensureDriverEntry = ({
+      driverRecordId,
+      driverUserId,
+      rawDriverId,
+      name,
+      username,
+    }) => {
+      const sanitizedRecordId = driverRecordId != null ? Number(driverRecordId) : null;
+      const sanitizedUserId = driverUserId != null ? Number(driverUserId) : null;
+      const sanitizedRawId = rawDriverId != null ? Number(rawDriverId) : null;
+
+      let key = null;
+      if (Number.isFinite(sanitizedRecordId)) {
+        key = `driver:${sanitizedRecordId}`;
+      } else if (Number.isFinite(sanitizedUserId)) {
+        key = `user:${sanitizedUserId}`;
+      } else if (Number.isFinite(sanitizedRawId)) {
+        key = `user:${sanitizedRawId}`;
+      }
+
+      if (!key) {
+        return null;
+      }
+
+      if (!driverMap.has(key)) {
+        driverMap.set(key, {
+          driverKey: key,
+          driverId: Number.isFinite(sanitizedRecordId) ? toSafeString(sanitizedRecordId) : null,
+          userId: Number.isFinite(sanitizedUserId)
+            ? toSafeString(sanitizedUserId)
+            : (Number.isFinite(sanitizedRawId) ? toSafeString(sanitizedRawId) : null),
+          name: name || 'Motorista',
+          username: username || null,
+          deliveriesToday: 0,
+          deliveriesMonth: 0,
+          occurrencesToday: 0,
+          occurrencesMonth: 0,
+          vehiclesTodaySet: new Map(),
+          vehiclesMonthSet: new Map(),
+        });
+      } else {
+        const entry = driverMap.get(key);
+        if ((!entry.name || entry.name === 'Motorista') && name) {
+          entry.name = name;
+        }
+        if (!entry.username && username) {
+          entry.username = username;
+        }
+        if (!entry.userId && Number.isFinite(sanitizedUserId)) {
+          entry.userId = toSafeString(sanitizedUserId);
+        }
+      }
+
+      return driverMap.get(key);
+    };
+
+    driverRows.forEach((row) => {
+      ensureDriverEntry({
+        driverRecordId: row.driver_id,
+        driverUserId: row.driver_user_id,
+        rawDriverId: null,
+        name: row.driver_name || row.driver_username || 'Motorista',
+        username: row.driver_username || null,
+      });
+    });
+
+    let totalDeliveriesToday = 0;
+    let totalDeliveriesMonth = 0;
+
+    deliveryRows.forEach((row) => {
+      const entry = ensureDriverEntry({
+        driverRecordId: row.driver_record_id,
+        driverUserId: row.driver_user_id,
+        rawDriverId: row.raw_driver_id,
+        name: row.driver_record_name || row.direct_name || row.driver_record_username || row.direct_username,
+        username: row.driver_record_username || row.direct_username || null,
+      });
+
+      if (!entry) {
+        return;
+      }
+
+      const isToday = toBooleanLike(row.is_today);
+      const isCurrentMonth = toBooleanLike(row.is_current_month);
+
+      if (isToday) {
+        entry.deliveriesToday += 1;
+        totalDeliveriesToday += 1;
+      }
+      if (isCurrentMonth) {
+        entry.deliveriesMonth += 1;
+        totalDeliveriesMonth += 1;
+      }
+    });
+
+    occurrenceRows.forEach((row) => {
+      const entry = ensureDriverEntry({
+        driverRecordId: row.driver_record_id,
+        driverUserId: row.driver_user_id,
+        rawDriverId: row.occurrence_driver_id ?? row.related_delivery_driver_id,
+        name: row.driver_record_name || row.direct_name,
+        username: null,
+      });
+
+      if (!entry) {
+        return;
+      }
+
+      const isToday = toBooleanLike(row.is_today);
+      const isCurrentMonth = toBooleanLike(row.is_current_month);
+
+      if (isToday) {
+        entry.occurrencesToday += 1;
+      }
+      if (isCurrentMonth) {
+        entry.occurrencesMonth += 1;
+      }
+    });
+
+    const registerVehicle = (entry, bucket, vehicleRow) => {
+      if (!entry) return;
+      const vehicleKey = vehicleRow.vehicle_id != null
+        ? `id:${vehicleRow.vehicle_id}`
+        : `label:${vehicleRow.plate || vehicleRow.model || 'desconhecido'}`;
+
+      const labelParts = [];
+      if (vehicleRow.plate) labelParts.push(vehicleRow.plate);
+      if (vehicleRow.model) labelParts.push(vehicleRow.model);
+      const label = labelParts.length ? labelParts.join(' - ') : 'Veiculo nao identificado';
+
+      const targetBucket = bucket === 'today' ? entry.vehiclesTodaySet : entry.vehiclesMonthSet;
+      if (!targetBucket.has(vehicleKey)) {
+        targetBucket.set(vehicleKey, {
+          vehicleId: vehicleRow.vehicle_id != null ? toSafeString(vehicleRow.vehicle_id) : null,
+          plate: vehicleRow.plate || null,
+          model: vehicleRow.model || null,
+          brand: vehicleRow.brand || null,
+          label,
+        });
+      }
+    };
+
+    routeRows.forEach((row) => {
+      const entry = ensureDriverEntry({
+        driverRecordId: row.driver_id,
+        driverUserId: row.driver_user_id,
+        rawDriverId: row.driver_user_id,
+        name: null,
+        username: null,
+      });
+      if (!entry) {
+        return;
+      }
+
+      if (toBooleanLike(row.used_today)) {
+        registerVehicle(entry, 'today', row);
+      }
+      if (toBooleanLike(row.used_current_month)) {
+        registerVehicle(entry, 'month', row);
+      }
+    });
+
+    let topEntry = null;
+
+    const drivers = Array.from(driverMap.values()).map((entry) => {
+      const vehiclesToday = Array.from(entry.vehiclesTodaySet.values());
+      const vehiclesMonth = Array.from(entry.vehiclesMonthSet.values());
+      delete entry.vehiclesTodaySet;
+      delete entry.vehiclesMonthSet;
+
+      if (entry.deliveriesToday > 0) {
+        if (!topEntry || entry.deliveriesToday > topEntry.deliveriesToday) {
+          topEntry = entry;
+        }
+      }
+
+      return {
+        ...entry,
+        vehiclesToday,
+        vehiclesMonth,
+        isTopToday: false,
+      };
+    });
+
+    const sortedDrivers = drivers.sort((a, b) => {
+      if (b.deliveriesToday !== a.deliveriesToday) {
+        return b.deliveriesToday - a.deliveriesToday;
+      }
+      if (b.deliveriesMonth !== a.deliveriesMonth) {
+        return b.deliveriesMonth - a.deliveriesMonth;
+      }
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+
+    if (sortedDrivers.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          generatedAt: new Date().toISOString(),
+          summary: {
+            totalDrivers: 0,
+            totalDeliveriesToday,
+            totalDeliveriesMonth,
+            topDriver: null,
+          },
+          drivers: [],
+        },
+      });
+    }
+
+    const topDriverEntry = sortedDrivers[0];
+    if (topDriverEntry.deliveriesToday > 0) {
+      topDriverEntry.isTopToday = true;
+    }
+
+    const summary = {
+      totalDrivers: sortedDrivers.length,
+      totalDeliveriesToday,
+      totalDeliveriesMonth,
+      topDriver: topDriverEntry.deliveriesToday > 0
+        ? {
+            driverKey: topDriverEntry.driverKey,
+            driverId: topDriverEntry.driverId,
+            userId: topDriverEntry.userId,
+            name: topDriverEntry.name,
+            deliveriesToday: topDriverEntry.deliveriesToday,
+          }
+        : null,
+    };
+
+    return res.json({
+      success: true,
+      data: {
+        generatedAt: new Date().toISOString(),
+        summary,
+        drivers: sortedDrivers.map((driver, index) => ({
+          ...driver,
+          rankToday: index + 1,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('Erro ao gerar relatorio de motoristas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Falha ao gerar relatorio de motoristas.',
+    });
+  }
+});
+
 app.get('/api/reports/canhotos', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (req, res) => {
   try {
     const { company_id } = req.user;

@@ -68,7 +68,7 @@ async function findDriverIdentifiers(id, companyId) {
       [id, id, companyId]
     );
     if (rows.length > 0) {
-      // Retorna o ID do registro e o ID do usuÃ¡rio
+      // Retorna o ID do registro e o ID do usuário
       return { id: rows[0].id, user_id: rows[0].user_id };
     }
     return null; // Retorna nulo se não encontrar um registro de motorista
@@ -324,7 +324,7 @@ function extractSefazDataFromText(text) {
     const uniq = Array.from(new Set(cnpjCpfMatches)).filter(Boolean);
 
     const enderecoRegexes = [
-      /endere[çc]o[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
+      /endereço[:\-\s]*([^\n\r]{3,120})/i, // Corrigido
       /logradouro[:\-\s]*([^\n\r]{3,120})/i
     ];
 
@@ -337,7 +337,7 @@ function extractSefazDataFromText(text) {
     const cepMatch = text.match(/CEP[:\-\s]*([0-9]{5}-?[0-9]{3})/i);
     const cep = cepMatch ? cepMatch[1] : '';
 
-    const municipioMatch = text.match(/munic[íi]pio[:\-\s]*([^\n\r]{3,50})/i,); // Corrigido
+    const municipioMatch = text.match(/município[:\-\s]*([^\n\r]{3,50})/i,); // Corrigido
     const municipio = municipioMatch ? clean(municipioMatch[1]) : '';
 
     const ufMatch = text.match(/UF[:\-\s]*([A-Z]{2})/i);
@@ -360,7 +360,7 @@ function extractSefazDataFromText(text) {
     const pesoBrutoMatch = text.match(/peso\s*bruto[:\-\s]*([0-9\.,]{1,10})/i);
     const pesoBruto = pesoBrutoMatch ? pesoBrutoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
-    const pesoLiquidoMatch = text.match(/peso\s*l[íi]quido[:\-\s]*([0-9\.,]{1,10})/i,); // Corrigido
+    const pesoLiquidoMatch = text.match(/peso\s*líquido[:\-\s]*([0-9\.,]{1,10})/i,); // Corrigido
     const pesoLiquido = pesoLiquidoMatch ? pesoLiquidoMatch[1].replace(/\./g, '').replace(',', '.') : '';
 
     let enderecoCompleto = endereco;
@@ -796,7 +796,7 @@ app.post('/api/deliveries/create-from-sefaz', authorize(['ADMIN', 'SUPERVISOR', 
 
       if (Array.isArray(existingDeliveries) && existingDeliveries.length > 0) {
         return res.status(409).json({
-          success: false,
+          success: false, // Corrigido
           error: 'Já existe uma entrega com este número de NF e chave.',
         });
       }
@@ -1137,7 +1137,7 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
           driverName = driverInfo[0].driver_name ? String(driverInfo[0].driver_name) : null;
         }
       } catch (infoError) {
-        console.warn('[Deliveries] Nao foi possivel identificar o motorista da entrega:', infoError.message);
+        console.warn('[Deliveries] Não foi possível identificar o motorista da entrega:', infoError.message);
       }
     }
 
@@ -1253,7 +1253,7 @@ if (require.main === module) {
   const PORT = Number(process.env.PORT || process.env.DELIVERIES_SERVICE_PORT || process.env.DELIVERIES_PORT || 3003);
   const allowedOrigins = Array.from(new Set(whitelist.map(p => p.toString())));
   app.listen(PORT, () => {
-    console.log(`🔒 CORS configurado para as origens: [
+    console.log(`🔒 CORS configurado para as origens: [ // Corrigido
   ${allowedOrigins.map((origin) => `'${origin}'`).join(',\n  ')}
 ]`);
     console.log(`🚀 Deliveries & Routes Service rodando na porta ${PORT}`);

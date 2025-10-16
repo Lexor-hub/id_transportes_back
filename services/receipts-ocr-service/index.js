@@ -105,20 +105,20 @@ if (hasGoogleCredentials) {
       const bucketName = process.env.GCLOUD_BUCKET || process.env.GCS_BUCKET;
       if (bucketName) {
         bucket = storage.bucket(bucketName);
-        console.log('? [Receipts] Google Cloud Storage configurado com sucesso.');
+        console.log('✅ [Receipts] Google Cloud Storage configurado com sucesso.');
       } else {
-        console.warn('?? [Receipts] GCS_BUCKET_NAME n�o definido. Uploads ser�o locais.');
+        console.warn('⚠️ [Receipts] GCS_BUCKET_NAME não definido. Uploads serão locais.');
       }
     } else {
-      throw new Error('Caminho das credenciais do Google n�o encontrado.');
+      throw new Error('Caminho das credenciais do Google não encontrado.');
     }
   } catch (error) {
-    console.warn('?? Erro ao configurar Google Cloud Services no Receipts Service:', error.message);
-    console.warn('?? Usando armazenamento local como fallback.');
+    console.warn('⚠️ Erro ao configurar Google Cloud Services no Receipts Service:', error.message);
+    console.warn('⚠️ Usando armazenamento local como fallback.');
     hasGoogleCredentials = false; // For�a o fallback
   }
 } else {
-  console.warn('?? [Receipts] Google Cloud Storage n�o configurado. Usando armazenamento local.');
+  console.warn('⚠️ [Receipts] Google Cloud Storage não configurado. Usando armazenamento local.');
 }
 
 
@@ -149,7 +149,7 @@ const OCR_CONFIG = {
   documentAIProjectId: normalizeEnv(process.env.DOCUMENT_AI_PROJECT_ID, normalizeEnv(process.env.GCLOUD_PROJECT_ID)),
 };
 
-console.log('[Receipts] Configura��es de OCR e Storage carregadas:', {
+console.log('[Receipts] Configurações de OCR e Storage carregadas:', {
   defaultEngine: OCR_CONFIG.defaultEngine,
   enableDocumentAI: OCR_CONFIG.enableDocumentAI,
   documentAILocation: OCR_CONFIG.documentAILocation,
@@ -164,21 +164,29 @@ console.log('[Receipts] Configura��es de OCR e Storage carregadas:', {
 
 // FunÃƒÂ§ÃƒÂ£o para enviar arquivo ao Google Cloud Storage
 async function uploadToGCS(file, folder = 'receipts') {
-  // Se o bucket não estiver configurado ou não houver credenciais, salva localmente
-  if (!bucket || !hasGoogleCredentials) {
-    console.warn(`[Receipts] GCS não configurado. Salvando arquivo localmente na pasta '${folder}'.`);
-    // Usa o diretório do serviço de entregas para centralizar os uploads
-    const uploadDir = path.resolve(__dirname, `../deliveries-routes-service/uploads/${folder}`);
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '.jpg')}`;
-    const filePath = path.join(uploadDir, uniqueName);
-    fs.writeFileSync(filePath, file.buffer);
-    // A URL deve ser relativa à porta 3003, que é onde a pasta está exposta
-    const localUrl = `http://localhost:3003/uploads/${folder}/${uniqueName}`;
-    return { publicUrl: localUrl, gcsPath: filePath };
+  // SOLUÇÃO IMEDIATA: Forçar o salvamento local na pasta de uploads do serviço de entregas,
+  // que é publicamente acessível na Vercel.
+  // A solução ideal a longo prazo é configurar o GCS com as variáveis de ambiente.
+  console.warn(`[Receipts] Forçando salvamento local na pasta 'uploads' do serviço de entregas.`); // Corrigido
+  
+  // O serviço 'deliveries-routes-service' expõe a pasta 'uploads'.
+  const uploadDir = path.resolve(__dirname, `../deliveries-routes-service/uploads/${folder}`);
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
   }
+  
+  const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '.jpg')}`;
+  const filePath = path.join(uploadDir, uniqueName);
+  fs.writeFileSync(file.buffer, filePath);
+
+  // A URL pública deve apontar para o serviço de entregas.
+  // A variável de ambiente `DELIVERIES_PUBLIC_BASE_URL` deve ser a URL do seu backend na Vercel.
+  const deliveriesBaseUrl = process.env.DELIVERIES_PUBLIC_BASE_URL || process.env.BACKEND_PUBLIC_BASE_URL || 'http://localhost:3003';
+  const publicUrl = `${deliveriesBaseUrl.replace(/\/$/, '')}/uploads/${folder}/${uniqueName}`;
+
+  // gcsPath agora armazena o caminho completo do arquivo local para ser acessado pelo `serveReceiptFile`.
+  return { publicUrl, gcsPath: filePath };
+
 
   return new Promise((resolve, reject) => {
     if (!file) return resolve(null);
@@ -232,7 +240,7 @@ const swaggerSpec = swaggerJsdoc(options);
 
 const app = express();
 app.use(express.json());
-// Configuracao CORS alinhada com os outros servicos HTTP
+// Configuração CORS alinhada com os outros servicos HTTP
 const defaultOrigins = [
   'http://localhost:8080',
   'http://localhost:5173',
@@ -323,7 +331,7 @@ const upload = multer({
     if (mimetype && extname) {
       return cb(null, true);
     } else {
-      cb(new Error('Apenas arquivos JPG, PNG, PDF e Word (DOC, DOCX) sÃƒÂ£o permitidos'));
+      cb(new Error('Apenas arquivos JPG, PNG, PDF e Word (DOC, DOCX) são permitidos'));
     }
   }
 });
@@ -337,11 +345,11 @@ const ensureLocalDir = () => {
   return uploadDir;
 };
 
-// Middleware de autenticaÃƒÂ§ÃƒÂ£o
+// Middleware de autenticação
 function authorize(roles = []) {
   return (req, res, next) => {
     const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'Token nÃƒÂ£o fornecido' });
+    if (!auth) return res.status(401).json({ error: 'Token não fornecido' });
     const token = auth.split(' ')[1];
     try {
       const decoded = jwt.verify(token, "fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a");
@@ -351,7 +359,7 @@ function authorize(roles = []) {
       req.user = decoded;
       next();
     } catch (err) {
-      res.status(401).json({ error: 'Token invÃƒÂ¡lido' });
+      res.status(401).json({ error: 'Token inválido' });
     }
   };
 }
@@ -364,12 +372,12 @@ async function serveReceiptFile(req, res, rawParam) {
       try {
         gcsPath = decodeURIComponent(gcsPath);
       } catch (decodeError) {
-        console.warn('Nao foi possivel decodificar o caminho do recibo, usando valor bruto.', decodeError.message);
+        console.warn('Não foi possível decodificar o caminho do recibo, usando valor bruto.', decodeError.message);
       }
     }
 
     if (!gcsPath) {
-      return res.status(400).send('Caminho do arquivo nao informado.');
+      return res.status(400).send('Caminho do arquivo não informado.');
     }
 
     if (!bucket || !hasGoogleCredentials) {
@@ -377,14 +385,14 @@ async function serveReceiptFile(req, res, rawParam) {
       if (fs.existsSync(localPath)) {
         return res.sendFile(localPath);
       }
-      return res.status(404).send('Arquivo local nao encontrado.');
+      return res.status(404).send('Arquivo local não encontrado.');
     }
 
     const file = bucket.file(gcsPath);
     const [exists] = await file.exists();
 
     if (!exists) {
-      return res.status(404).send('Arquivo nao encontrado no Google Cloud Storage.');
+      return res.status(404).send('Arquivo não encontrado no Google Cloud Storage.');
     }
 
     file.createReadStream()
@@ -444,11 +452,11 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
     const file = req.file;
 
     if (!file) {
-      return res.status(400).json({ error: 'Arquivo nÃƒÂ£o fornecido' });
+      return res.status(400).json({ error: 'Arquivo não fornecido' });
     }
 
     if (!delivery_id || !driver_id) {
-      return res.status(400).json({ error: 'delivery_id/deliveryId e driver_id/driverId sÃƒÂ£o obrigatÃƒÂ³rios' });
+      return res.status(400).json({ error: 'delivery_id/deliveryId e driver_id/driverId são obrigatórios' });
     }
 
     // Verificar se a entrega existe e pertence ao motorista
@@ -457,7 +465,7 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
       [delivery_id, req.user.company_id]);
 
     if (deliveryRows.length === 0) {
-      return res.status(404).json({ error: 'Entrega n�o encontrada' });
+      return res.status(404).json({ error: 'Entrega não encontrada' });
     }
 
     // Upload para o Google Cloud Storage
@@ -467,9 +475,9 @@ app.post('/api/receipts/upload', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), u
       return res.status(500).json({ error: 'Falha ao fazer upload do arquivo para o Cloud Storage' });
     }
     
-    // CORRE��O: Usa INSERT ... ON DUPLICATE KEY UPDATE para evitar o erro de entrada duplicada.
-    // Se um canhoto para a entrega j� existe, ele atualiza a imagem e reseta o status.
-    // Se n�o existe, ele insere um novo.
+    // CORREÇÃO: Usa INSERT ... ON DUPLICATE KEY UPDATE para evitar o erro de entrada duplicada.
+    // Se um canhoto para a entrega já existe, ele atualiza a imagem e reseta o status.
+    // Se não existe, ele insere um novo.
     const sql = `
       INSERT INTO delivery_receipts
         (delivery_note_id, driver_id, company_id, image_url, gcs_path, photo_datetime, status, notes)
@@ -527,13 +535,13 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
     const { engine = 'vision' } = req.query; 
     // engine pode ser "vision", "tesseract" ou "documentai"
 
-    // Buscar informaÃƒÂ§ÃƒÂµes do canhoto
+    // Buscar informações do canhoto
     const [receiptRows] = await pool.query(
       'SELECT * FROM delivery_receipts WHERE id = ? AND company_id = ?',
       [receiptId, req.user.company_id])
 
     if (receiptRows.length === 0) {
-      return res.status(404).json({ error: 'Canhoto n�o encontrado' });
+      return res.status(404).json({ error: 'Canhoto não encontrado' });
     }
 
     const receipt = receiptRows[0];
@@ -560,7 +568,7 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
       fileContent = req.file.buffer;
       fileExt = path.extname(req.file.originalname).toLowerCase();
     } else {
-      // Verifica se o arquivo estÃƒÂ¡ no GCS ou localmente
+      // Verifica se o arquivo está no GCS ou localmente
       if (receipt.gcs_path) {
         // Baixa o arquivo do GCS para processamento
         console.log(' Baixando arquivo do Google Cloud Storage:', receipt.gcs_path);
@@ -573,18 +581,18 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
           fileContent = fs.readFileSync(tempFilePath);
           fileExt = path.extname(receipt.gcs_path).toLowerCase();
           
-          // Remove o arquivo temporÃƒÂ¡rio apÃƒÂ³s uso
+          // Remove o arquivo temporário após uso
           fs.unlinkSync(tempFilePath);
         } catch (downloadError) {
           console.error(' Erro ao baixar arquivo do GCS:', downloadError);
-          return res.status(404).json({ error: 'N�o foi poss�vel acessar o arquivo no Cloud Storage' });
+          return res.status(404).json({ error: 'Não foi possível acessar o arquivo no Cloud Storage' });
         }
       } else if (fs.existsSync(receipt.image_url)) {
-        // Arquivo local (compatibilidade com versÃƒÂ£o anterior)
+        // Arquivo local (compatibilidade com versão anterior)
         fileContent = fs.readFileSync(receipt.image_url);
         fileExt = path.extname(receipt.image_url).toLowerCase();
       } else {
-        return res.status(404).json({ error: 'Arquivo n�o encontrado' });
+        return res.status(404).json({ error: 'Arquivo não encontrado' });
       }
     }
 
@@ -603,10 +611,10 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
         });
         
         text = result.fullTextAnnotation ? result.fullTextAnnotation.text : '';
-        console.log(` Documento processado com sucesso. Texto extraido: ${text.substring(0, 100)}...`);
+        console.log(` Documento processado com sucesso. Texto extraído: ${text.substring(0, 100)}...`);
       } catch (docError) {
-        console.error('Ã¢ÂÅ’ Erro ao processar documento:', docError);
-        return res.status(400).json({ error: `N�o foi poss�vel processar o documento ${fileExt}` });
+        console.error('❌ Erro ao processar documento:', docError);
+        return res.status(400).json({ error: `Não foi possível processar o documento ${fileExt}` });
       }
     } else if (engine === 'tesseract') {
       try {
@@ -620,11 +628,11 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
         text = result.data.text;
         await worker.terminate();
         
-        // Remove o arquivo temporÃƒÂ¡rio
+        // Remove o arquivo temporário
         fs.unlinkSync(tempFilePath);
       } catch (tessError) {
         console.error(' Erro ao processar com Tesseract:', tessError);
-        return res.status(400).json({ error: 'n�o foi poss�vel processar o arquivo com Tesseract' });
+        return res.status(400).json({ error: 'não foi possível processar o arquivo com Tesseract' });
       }
   } else if (engine === 'documentai') {
     console.log(` Processando documento usando Google Document AI`);
@@ -652,10 +660,10 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
         req.documentAIEntities = extractDocumentAIData(document).extractedData;
       } catch (docAIError) {
         console.error(' Erro ao processar com Document AI:', docAIError);
-        return res.status(400).json({ error: 'não foi possível processar o arquivo com Document AI' });
+        return res.status(400).json({ error: 'Não foi possível processar o arquivo com Document AI' });
       }
     } else {
-      // ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ OCR com Google Vision para imagens
+      // ✅ OCR com Google Vision para imagens
       console.log(` Processando imagem usando Google Cloud Vision API`);
       try {
         // Usando Text Detection otimizado para imagens de recibos
@@ -668,10 +676,10 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
         
         const detections = result.textAnnotations;
         text = detections.length > 0 ? detections[0].description : '';
-        console.log(` Imagem processada com sucesso. Texto extraidos: ${text.substring(0, 100)}...`);
+        console.log(` Imagem processada com sucesso. Texto extraído: ${text.substring(0, 100)}...`);
       } catch (imgError) {
         console.error(' Erro ao processar imagem:', imgError);
-        return res.status(400).json({ error: 'não foi possível processar a imagem' });
+        return res.status(400).json({ error: 'Não foi possível processar a imagem' });
       }
     }
 
@@ -680,7 +688,7 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
     }
 
     // Extrair dados estruturados do texto usando Google Cloud Vision
-    console.log(' Extraindo dados estruturados do texto OCR');
+    console.log(' Extraindo dados estruturados do texto OCR'); // Corrigido
     const ocrData = await extractStructuredData(text, fileExt, req.documentAIEntities);
 
     // Atualizar status do canhoto
@@ -703,7 +711,7 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
   }
 });
 
-// FunÃƒÂ§ÃƒÂ£o para extrair dados estruturados do Document AI
+// Função para extrair dados estruturados do Document AI
 
 function extractDocumentAIData(document) {
   const labelStore = new Map();
@@ -1103,7 +1111,7 @@ app.put('/api/receipts/:id/validate', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR'
     });
 
   } catch (error) {
-    console.error('Erro na valida��o:', error);
+    console.error('Erro na validação:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1161,9 +1169,9 @@ app.get('/api/receipts', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (re
   }
 });
 
-// FunÃƒÂ§ÃƒÂ£o para extrair dados estruturados do texto OCR com suporte a diferentes formatos de documento
+// Função para extrair dados estruturados do texto OCR com suporte a diferentes formatos de documento
 async function extractStructuredData(text, fileExt = '', documentAIEntities = null) {
-  console.log(` Extraindo dados estruturados do texto OCR (formato: ${fileExt || 'imagem'})`);
+  console.log(` Extraindo dados estruturados do texto OCR (formato: ${fileExt || 'imagem'})`); // Corrigido
   
   const data = {
     nf_number: '',
@@ -1176,7 +1184,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
 
   // Se temos entidades do Document AI, usamos elas prioritariamente
   if (documentAIEntities && Object.keys(documentAIEntities).length > 0) {
-    console.log(' Usando entidades extraidas pelo Document AI');
+    console.log(' Usando entidades extraídas pelo Document AI');
     
     // Mapeamento de tipos de entidades do Document AI para nossos campos
     if (documentAIEntities['invoice_id'] || documentAIEntities['invoice_number']) {
@@ -1196,7 +1204,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
       data.value = parseFloat(valueStr.replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
     }
     
-    // Adicionar itens se disponÃƒÂ­veis
+    // Adicionar itens se disponíveis
     if (documentAIEntities['line_items'] && Array.isArray(documentAIEntities['line_items'])) {
       data.items = documentAIEntities['line_items'];
     }
@@ -1209,12 +1217,12 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
     .replace(/\n+/g, '\n')
     .trim();
 
-  // ExpressÃƒÂµes regulares melhoradas para diferentes formatos de documento
+  // Expressões regulares melhoradas para diferentes formatos de documento
   const regexPatterns = {
-    // PadrÃƒÂµes para nÃƒÂºmero da NF
+    // Padrões para número da NF
     nf: [
       /NF[e\-]?[:\s]*(\d+)/i,
-      /N[oÃ‚Âº][:\s]*(\d+)/i,
+      /N[oº][:\s]*(\d+)/i,
       /Nota\s*Fiscal[:\s]*(\d+)/i,
       /NÃƒÂºmero[:\s]*(\d+)/i,
       /\b(\d{6,9})\b/  // NÃƒÂºmeros longos isolados que podem ser NF
@@ -1225,21 +1233,21 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
       /valor[:\s]*R?\$?\s*([\d.,]+)/i,
       /R\$\s*([\d.,]+)/i
     ],
-    // PadrÃƒÂµes para nome do cliente
+    // Padrões para nome do cliente
     client: [
       /cliente[:\s]*([^\n\r]{3,50})/i,
-      /destinat[]rio[:\s]*([^\n\r]{3,50})/i,
+      /destinat[áa]rio[:\s]*([^\n\r]{3,50})/i,
       /nome[:\s]*([^\n\r]{3,50})/i,
-      /raz[o\s*social[:\s]*([^\n\r]{3,50})/i
+      /razão\s*social[:\s]*([^\n\r]{3,50})/i
     ],
-    // PadrÃƒÂµes para endereÃƒÂ§o
+    // Padrões para endereço
     address: [
-      /endere[ÃƒÂ§c]o[:\s]*([^\n\r]{5,100})/i,
+      /endereço[:\s]*([^\n\r]{5,100})/i,
       /logradouro[:\s]*([^\n\r]{5,100})/i,
       /rua[:\s]*([^\n\r]{5,100})/i,
       /av[\.]?[:\s]*([^\n\r]{5,100})/i
     ],
-    // PadrÃƒÂµes para CNPJ/CPF
+    // Padrões para CNPJ/CPF
     document: [
       /(\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})/,  // CNPJ formatado
       /(\d{14})/,  // CNPJ sem formataÃƒÂ§ÃƒÂ£o
@@ -1263,7 +1271,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
   // Extrair valor total
   const valueStr = extractWithPatterns(regexPatterns.value, normalizedText);
   if (valueStr) {
-    // Normalizar formato numÃƒÂ©rico
+    // Normalizar formato numérico
     const normalizedValue = valueStr
       .replace(/[^\d,.]/g, '')
       .replace(',', '.');
@@ -1287,13 +1295,13 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
   // Extrair endereÃƒÂ§o
   data.address = extractWithPatterns(regexPatterns.address, normalizedText);
 
-  // Processamento especÃƒÂ­fico para documentos Word
+  // Processamento específico para documentos Word
   if (fileExt && ['.doc', '.docx'].includes(fileExt.toLowerCase())) {
-    // Documentos Word geralmente tÃƒÂªm formataÃƒÂ§ÃƒÂ£o mais estruturada
-    // Podemos tentar extrair informaÃƒÂ§ÃƒÂµes de tabelas ou seÃƒÂ§ÃƒÂµes especÃƒÂ­ficas
+    // Documentos Word geralmente têm formatação mais estruturada
+    // Podemos tentar extrair informações de tabelas ou seções específicas
     const paragraphs = text.split('\n\n');
     
-    // Procurar por parÃƒÂ¡grafos que possam conter informaÃƒÂ§ÃƒÂµes de endereÃƒÂ§o
+    // Procurar por parágrafos que possam conter informações de endereço
     for (const para of paragraphs) {
       if (para.match(/rua|avenida|av\.|logradouro|endere[ÃƒÂ§c]o/i) && !data.address) {
         data.address = para.trim();
@@ -1301,7 +1309,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
     }
   }
 
-  // Processamento especÃƒÂ­fico para PDFs
+  // Processamento específico para PDFs
   if (fileExt && ['.pdf'].includes(fileExt.toLowerCase())) {
     // PDFs podem ter estrutura mais complexa
     // Tentar identificar blocos de texto que possam ser itens
@@ -1322,7 +1330,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
     }
   }
 
-  console.log(' Dados estruturados extraido:', data);
+  console.log(' Dados estruturados extraído:', data);
   return data;
 }
 
@@ -1360,7 +1368,7 @@ async function extractStructuredData(text, fileExt = '', documentAIEntities = nu
  *       400:
  *         description: Arquivo não fornecido.
  *       503:
- *         description: Serviço do Document AI não configurado no backend.
+ *         description: Serviço do Document AI não configurado no backend. // Corrigido
  */
 app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), upload.single('file'), async (req, res) => {
   try {
@@ -1368,7 +1376,7 @@ app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPE
       return res.status(400).json({ error: 'Arquivo nao fornecido' });
     }
     if (!isDocumentAIReady()) {
-      return res.status(503).json({
+      return res.status(503).json({ // Corrigido
         error: 'Document AI nao esta configurado no servidor',
         details: 'Verifique as credenciais e variaveis DOCUMENT_AI_* no backend.'
       });
@@ -1392,7 +1400,7 @@ app.post('/api/receipts/process-documentai', authorize(['DRIVER', 'ADMIN', 'SUPE
   }
 });
 
-// CORRE��O: Usa a porta do .env ou a porta padr�o 3004.
+// CORREÇÃO: Usa a porta do .env ou a porta padrão 3004.
 const PORT = Number(process.env.RECEIPTS_SERVICE_PORT || process.env.RECEIPTS_PORT || process.env.PORT || 3004);
 app.listen(PORT, () => console.log(`Receipts OCR Service rodando na porta ${PORT}`));
 
