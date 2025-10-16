@@ -99,6 +99,26 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 const connections = new Map();
 
 const driverVehicleMap = new Map(); // driver_id -> { vehicleId, vehicleLabel, companyId, updatedAt }
+async function persistTrackingPoint({ driverId, companyId, vehicleId, latitude, longitude, accuracy, speed, heading, deliveryId }) {
+  const fallbackQuery = `INSERT INTO tracking_points (driver_id, company_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+  const fallbackParams = [driverId, companyId, latitude, longitude, accuracy, speed, heading, deliveryId];
+
+  if (vehicleId !== null && vehicleId !== undefined) {
+    try {
+      await pool.execute(`INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`, [driverId, companyId, Number(vehicleId), latitude, longitude, accuracy, speed, heading, deliveryId]);
+      return;
+    } catch (error) {
+      if (error && (error.code === 'ER_BAD_FIELD_ERROR' || error.code === 'ER_WRONG_VALUE_COUNT_ON_ROW')) {
+        console.warn('[Tracking] Tabela tracking_points sem coluna vehicle_id. Gravando sem o campo.');
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  await pool.execute(fallbackQuery, fallbackParams);
+}
+
 
 async function rememberVehicle(driverId, companyId, vehicleId) {
   if (vehicleId === undefined || vehicleId === null || vehicleId === '') {
@@ -209,20 +229,17 @@ wss.on('connection', (ws, req) => {
 // Função para salvar localização no banco
 async function saveLocation(data) {
   try {
-    await pool.query(`
-      INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-    `, [
-      data.driver_id,
-      data.company_id,
-      data.vehicle_id || null,
-      data.location.latitude,
-      data.location.longitude,
-      data.location.accuracy || null,
-      data.location.speed || null,
-      data.location.heading || null,
-      data.delivery_id || null
-    ]);
+    await persistTrackingPoint({
+      driverId: data.driver_id,
+      companyId: data.company_id,
+      vehicleId: data.vehicle_id ?? null,
+      latitude: data.location.latitude,
+      longitude: data.location.longitude,
+      accuracy: data.location.accuracy || null,
+      speed: data.location.speed || null,
+      heading: data.location.heading || null,
+      deliveryId: data.delivery_id || null,
+    });
   } catch (error) {
     console.error('Erro ao salvar localizacao:', error);
   }
@@ -230,7 +247,7 @@ async function saveLocation(data) {
   try {
     await rememberVehicle(data.driver_id, data.company_id, data.vehicle_id);
   } catch (error) {
-    console.warn('[Tracking] Nao foi possivel atualizar o veiculo do motorista:', error.message);
+    console.warn('[Tracking] Nao foi possivel atualizar o veiculo do motorista:', error && error.message ? error.message : error);
   }
 }
 
@@ -324,11 +341,17 @@ app.post('/api/tracking/location', authorize(['DRIVER']), async (req, res) => {
         }
 
         // Insere a localização na tabela tracking_points
-        await pool.execute(
-            `INSERT INTO tracking_points (driver_id, company_id, vehicle_id, latitude, longitude, accuracy, speed, heading, delivery_id, timestamp)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [driver_id, company_id, vehicle_id ? Number(vehicle_id) : null, parsedLatitude, parsedLongitude, sanitizedAccuracy, parsedSpeed, parsedHeading, parsedDeliveryId]
-        );
+        await persistTrackingPoint({
+          driverId: driver_id,
+          companyId: company_id,
+          vehicleId: vehicle_id ?? null,
+          latitude: parsedLatitude,
+          longitude: parsedLongitude,
+          accuracy: sanitizedAccuracy,
+          speed: parsedSpeed,
+          heading: parsedHeading,
+          deliveryId: parsedDeliveryId,
+        });
 
         console.log('[Tracking] Localização persistida', { driver_id, company_id });
         res.status(200).json({ success: true, message: 'Localização salva com sucesso' });
