@@ -610,12 +610,11 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
 
     console.log(`[Tracking] Recebida atualização de status para driver ${driverId} com status: ${frontendStatus}`);
 
-    // Mapeia o status do frontend para o status do banco de dados
     const statusMap = {
       online: 'active',
       offline: 'inactive',
-      idle: 'inactive', 
-      busy: 'active', 
+      idle: 'inactive',
+      busy: 'active',
     };
 
     const dbStatus = statusMap[frontendStatus];
@@ -632,13 +631,14 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     );
 
     if (driverRows.length === 0) {
+      // Tenta encontrar o motorista pelo user_id do token se não encontrar pelo driverId
       const [rowsByUser] = await pool.query(
         'SELECT * FROM drivers WHERE user_id = ? AND company_id = ?',
-        [req.user.user_id, companyId]
+        [req.user.id, companyId] // <-- CORRIGIDO: de req.user.user_id para req.user.id
       );
 
       if (rowsByUser.length === 0) {
-        console.warn('[Tracking] Driver não encontrado para atualização de status', { driverId, userId: req.user.user_id });
+        console.warn('[Tracking] Driver não encontrado para atualização de status', { driverId, userId: req.user.id }); // <-- CORRIGIDO
         return res.status(404).json({ error: 'Motorista não encontrado' });
       }
 
@@ -654,7 +654,7 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     broadcastToCompany(companyId, {
       type: 'driver_status',
       driver_id: driverIdToUpdate,
-      status: dbStatus, // Envia o status do DB para consistência
+      status: dbStatus,
       timestamp: new Date().toISOString()
     });
 
@@ -664,9 +664,7 @@ app.put('/api/tracking/drivers/:driverId/status', authorize(['DRIVER', 'ADMIN'])
     console.error('Erro ao atualizar status:', error);
     res.status(500).json({ error: error.message });
   }
-},);
-
-
+}); 
 
 
 if (require.main === module) {
