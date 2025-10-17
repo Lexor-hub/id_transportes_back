@@ -85,9 +85,31 @@ const OCR_CONFIG = {
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
 const recentDeliveryAlerts = [];
 
-const pushDeliveryAlert = (alert) => {
-  if (!alert || typeof alert !== 'object') return;
-  recentDeliveryAlerts.unshift(alert);
+const pushDeliveryAlert = (rawAlert) => {
+  if (!rawAlert || typeof rawAlert !== 'object') return;
+
+  const normalizedTimestamp = rawAlert.timestamp && typeof rawAlert.timestamp === 'string'
+    ? rawAlert.timestamp
+    : new Date().toISOString();
+
+  const normalized = {
+    id: rawAlert.id ? String(rawAlert.id) : `${normalizedTimestamp}-${Math.random().toString(36).slice(2, 8)}`,
+    type: rawAlert.type ? String(rawAlert.type) : 'info',
+    severity: rawAlert.severity ? String(rawAlert.severity) : (rawAlert.type === 'delivery_deleted' ? 'danger' : 'info'),
+    companyId: rawAlert.companyId ? String(rawAlert.companyId) : null,
+    deliveryId: rawAlert.deliveryId ? String(rawAlert.deliveryId) : null,
+    nfNumber: rawAlert.nfNumber ? String(rawAlert.nfNumber) : null,
+    driverId: rawAlert.driverId ? String(rawAlert.driverId) : null,
+    driverName: rawAlert.driverName ? String(rawAlert.driverName) : null,
+    vehicleLabel: rawAlert.vehicleLabel ? String(rawAlert.vehicleLabel) : null,
+    actorId: rawAlert.actorId ? String(rawAlert.actorId) : null,
+    actorName: rawAlert.actorName ? String(rawAlert.actorName) : null,
+    actorRole: rawAlert.actorRole ? String(rawAlert.actorRole) : null,
+    message: rawAlert.message ? String(rawAlert.message) : null,
+    timestamp: normalizedTimestamp,
+  };
+
+  recentDeliveryAlerts.unshift(normalized);
   if (recentDeliveryAlerts.length > 50) {
     recentDeliveryAlerts.length = 50;
   }
@@ -1187,13 +1209,29 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 
     await pool.query('DELETE FROM delivery_notes WHERE id = ? AND company_id = ?', [deliveryId, companyId]);
 
+    const actorIdRaw = req.user?.user_id ?? req.user?.id ?? null;
+    const actorName =
+      (typeof req.user?.full_name === 'string' && req.user.full_name) ||
+      (typeof req.user?.name === 'string' && req.user.name) ||
+      (typeof req.user?.username === 'string' && req.user.username) ||
+      (typeof req.user?.email === 'string' && req.user.email) ||
+      driverName ||
+      'Motorista';
+
+    const isDriverActor = userType === 'DRIVER' || userType === 'MOTORISTA';
+
     pushDeliveryAlert({
       type: 'delivery_deleted',
+      severity: 'danger',
+      message: isDriverActor ? 'Entrega removida pelo motorista.' : 'Entrega removida.',
       companyId: companyId ? String(companyId) : null,
       deliveryId: String(deliveryId),
       nfNumber: delivery.nf_number ? String(delivery.nf_number) : null,
       driverId: delivery.driver_id ? String(delivery.driver_id) : null,
       driverName: driverName || 'Motorista',
+      actorId: actorIdRaw ? String(actorIdRaw) : null,
+      actorName,
+      actorRole: userType,
       timestamp: new Date().toISOString(),
     });
 
