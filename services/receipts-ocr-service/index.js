@@ -190,11 +190,11 @@ async function uploadToGCS(file, folder = 'receipts') {
   const filePath = path.join(uploadDir, uniqueName);
   fs.writeFileSync(filePath, file.buffer);
 
-  // A URL pública passa a utilizar o endpoint de visualização do próprio serviço de recibos.
+  // A URL pï¿½blica passa a utilizar o endpoint de visualizaï¿½ï¿½o do prï¿½prio serviï¿½o de recibos.
   const viewUrl = buildReceiptViewUrl(filePath);
   const publicUrl = viewUrl || filePath;
 
-  // gcsPath mantém o caminho completo para uso interno do `serveReceiptFile`.
+  // gcsPath mantï¿½m o caminho completo para uso interno do `serveReceiptFile`.
   return { publicUrl, gcsPath: filePath };
 
 
@@ -396,14 +396,14 @@ async function serveReceiptFile(req, res, rawParam) {
     }
 
     if (!bucket || !hasGoogleCredentials) {
-      return res.status(404).send('Arquivo local não encontrado.');
+      return res.status(404).send('Arquivo local nï¿½o encontrado.');
     }
 
     const file = bucket.file(gcsPath);
     const [exists] = await file.exists();
 
     if (!exists) {
-      return res.status(404).send('Arquivo não encontrado no Google Cloud Storage.');
+      return res.status(404).send('Arquivo nÃ£o encontrado no Google Cloud Storage.');
     }
 
     file.createReadStream()
@@ -735,6 +735,59 @@ app.post('/api/receipts/:id/process-ocr', authorize(['DRIVER', 'ADMIN', 'SUPERVI
 function extractDocumentAIData(document) {
   const labelStore = new Map();
 
+  const LABEL_ALIASES = new Map([
+    ['chave de acesso', 'chave'],
+    ['chave de acesso nf-e', 'chave'],
+    ['chave nf', 'chave'],
+    ['nfe key', 'chave'],
+    ['nf-e key', 'chave'],
+    ['access key', 'chave'],
+    ['numero nf', 'nro'],
+    ['numero da nf', 'nro'],
+    ['numero nota', 'nro'],
+    ['numero_nf', 'nro'],
+    ['nf', 'nro'],
+    ['invoice number', 'nro'],
+    ['document number', 'nro'],
+    ['nome do cliente', 'receiver_name'],
+    ['cliente', 'receiver_name'],
+    ['destinatario', 'receiver_name'],
+    ['customer name', 'receiver_name'],
+    ['receiver name', 'receiver_name'],
+    ['data de emissao', 'invoice_date'],
+    ['data emissao', 'invoice_date'],
+    ['emissao', 'invoice_date'],
+    ['data_emissao', 'invoice_date'],
+    ['invoice date', 'invoice_date'],
+    ['issue date', 'invoice_date'],
+    ['data de saida', 'saida'],
+    ['data saida', 'saida'],
+    ['saida', 'saida'],
+    ['data_saida', 'saida'],
+    ['ship date', 'saida'],
+    ['shipment date', 'saida'],
+    ['valor total do produto', 'total_amount'],
+    ['valor total produtos', 'total_amount'],
+    ['total produtos', 'total_amount'],
+    ['valor_total_produtos', 'total_amount'],
+    ['total amount', 'total_amount'],
+    ['amount due', 'total_amount'],
+    ['valor nota', 'due_date'],
+    ['valor da nota', 'due_date'],
+    ['valor_total_nota', 'due_date'],
+    ['data de vencimento', 'due_date'],
+    ['data vencimento', 'due_date'],
+    ['data_vencimento', 'due_date'],
+    ['vencimento', 'due_date'],
+    ['due date', 'due_date']
+  ]);
+
+  const canonicalizeLabel = (label) => {
+    const normalized = typeof label === 'string' ? label.trim().toLowerCase() : '';
+    if (!normalized) return '';
+    return LABEL_ALIASES.get(normalized) || normalized;
+  };
+
   const normalizeString = (value) => {
     if (typeof value === 'string') {
       return value.trim();
@@ -754,7 +807,7 @@ function extractDocumentAIData(document) {
   };
 
   const recordLabel = (label, value) => {
-    const normalizedLabel = normalizeString(label).toLowerCase();
+    const normalizedLabel = canonicalizeLabel(label);
     const normalizedValue = normalizeString(value);
     if (!normalizedLabel || !normalizedValue) {
       return;
@@ -976,24 +1029,85 @@ function extractDocumentAIData(document) {
     return digits || '';
   };
 
-  const extractedData = {
-    // Capturando apenas os campos solicitados
-    nfNumber: sanitizeNfNumber(takeFromAll(['nro', 'invoice_number', 'invoice_id', 'document_number'])),
-    nfeKey: sanitizeNfNumber(takeFromAll(['nfe_key', 'access_key', 'chave_nfe', 'chave_de_acesso', 'chave'])),
-    clientName: takeFirst(['receiver_name', 'ship_to_name', 'customer_name', 'destinatario_nome'], normalizeString),
-    productValue: takeCurrency(['net_amount', 'valor_total_produtos', 'subtotal']),
-    invoiceTotalValue: takeCurrency(['total_amount', 'amount_due', 'valor_total_nota', 'grand_total']),
-    issueDate: takeDate(['issue_date', 'invoice_date', 'data_emissao', 'emission_date']),
-    departureDate: takeDate(['ship_date', 'data_saida', 'shipment_date', 'dt_saida_entrada']),
-  };
+  const chave = sanitizeNfNumber(
+    takeFromAll(['chave', 'nfe_key', 'access_key', 'chave_nfe', 'chave_de_acesso'])
+  );
+  const nro = sanitizeNfNumber(
+    takeFromAll(['nro', 'nf', 'invoice_number', 'invoice_id', 'document_number', 'numero_nf'])
+  );
+  const receiverName = takeFirst(
+    ['receiver_name', 'nome do cliente', 'customer_name', 'ship_to_name', 'destinatario_nome'],
+    normalizeString
+  );
+  const productValue = takeCurrency([
+    'total_amount',
+    'valor_total_produtos',
+    'valor total do produto',
+    'net_amount',
+    'subtotal'
+  ]);
+  let invoiceTotalValue = takeCurrency([
+    'valor_total_nota',
+    'valor nota',
+    'valor da nota',
+    'grand_total',
+    'amount_due',
+    'invoice_total'
+  ]);
+  const invoiceDate = takeDate([
+    'invoice_date',
+    'issue_date',
+    'data_emissao',
+    'data de emissao',
+    'emission_date'
+  ]);
+  const departureDate = takeDate([
+    'saida',
+    'data_saida',
+    'ship_date',
+    'shipment_date',
+    'dt_saida_entrada',
+    'data de saida'
+  ]);
+  const dueDate = takeDate([
+    'due_date',
+    'data_vencimento',
+    'data de vencimento',
+    'vencimento',
+    'valor nota'
+  ]);
 
-  // Se o valor total da nota nÃ£o for encontrado, usar o valor dos produtos como fallback
-  if (!extractedData.invoiceTotalValue && extractedData.productValue) {
-    extractedData.invoiceTotalValue = extractedData.productValue;
+  let totalAmount = productValue;
+  if (!totalAmount && invoiceTotalValue) {
+    totalAmount = invoiceTotalValue;
+  }
+  if (!invoiceTotalValue && totalAmount) {
+    invoiceTotalValue = totalAmount;
   }
 
+  const canonicalData = {
+    chave,
+    nro,
+    receiver_name: receiverName,
+    invoice_date: invoiceDate,
+    saida: departureDate,
+    total_amount: totalAmount,
+    due_date: dueDate
+  };
+
+  const compatibilityData = {
+    nfeKey: canonicalData.chave,
+    nfNumber: canonicalData.nro,
+    clientName: canonicalData.receiver_name,
+    issueDate: canonicalData.invoice_date,
+    departureDate: canonicalData.saida,
+    productValue: canonicalData.total_amount,
+    invoiceTotalValue,
+    dueDate: canonicalData.due_date
+  };
+
   return {
-    extractedData,
+    extractedData: { ...canonicalData, ...compatibilityData },
     rawFields: Object.fromEntries(Array.from(labelStore.entries()).map(([key, value]) => [key, value.slice(0, 10)]))
   };
 }
