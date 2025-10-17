@@ -742,9 +742,12 @@ function extractDocumentAIData(document) {
     ['nfe key', 'chave'],
     ['nf-e key', 'chave'],
     ['access key', 'chave'],
+    ['nfe_key', 'chave'],
+    ['chave_acesso', 'chave'],
     ['numero nf', 'nro'],
     ['numero da nf', 'nro'],
     ['numero nota', 'nro'],
+    ['numero nf', 'nro'],
     ['numero_nf', 'nro'],
     ['nf', 'nro'],
     ['invoice number', 'nro'],
@@ -757,25 +760,33 @@ function extractDocumentAIData(document) {
     ['data de emissao', 'invoice_date'],
     ['data emissao', 'invoice_date'],
     ['emissao', 'invoice_date'],
+    ['data emissao', 'invoice_date'],
     ['data_emissao', 'invoice_date'],
     ['invoice date', 'invoice_date'],
     ['issue date', 'invoice_date'],
     ['data de saida', 'saida'],
     ['data saida', 'saida'],
     ['saida', 'saida'],
+    ['data saida', 'saida'],
     ['data_saida', 'saida'],
     ['ship date', 'saida'],
     ['shipment date', 'saida'],
+    ['data de saida/entrada', 'saida'],
+    ['data saida/entrada', 'saida'],
+    ['saida/entrada', 'saida'],
     ['valor total do produto', 'total_amount'],
     ['valor total produtos', 'total_amount'],
     ['total produtos', 'total_amount'],
+    ['valor total produtos', 'total_amount'],
     ['valor_total_produtos', 'total_amount'],
     ['total amount', 'total_amount'],
     ['amount due', 'total_amount'],
     ['valor nota', 'due_date'],
     ['valor da nota', 'due_date'],
+    ['valor total nota', 'due_date'],
     ['valor_total_nota', 'due_date'],
     ['data de vencimento', 'due_date'],
+    ['data vencimento', 'due_date'],
     ['data vencimento', 'due_date'],
     ['data_vencimento', 'due_date'],
     ['vencimento', 'due_date'],
@@ -783,7 +794,17 @@ function extractDocumentAIData(document) {
   ]);
 
   const canonicalizeLabel = (label) => {
-    const normalized = typeof label === 'string' ? label.trim().toLowerCase() : '';
+    if (!label) return '';
+    let normalized = normalizeString(label).toLowerCase();
+    if (!normalized) return '';
+    normalized = normalized
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[:：]+$/u, '')
+      .replace(/\s*[/\\]\s*/g, '/')
+      .replace(/[^\w/]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
     if (!normalized) return '';
     return LABEL_ALIASES.get(normalized) || normalized;
   };
