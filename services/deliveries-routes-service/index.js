@@ -83,36 +83,155 @@ const OCR_CONFIG = {
   documentAIProcessorId: process.env.DOCUMENT_AI_PROCESSOR_ID
 };
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif']);
-const recentDeliveryAlerts = [];
+const DELIVERY_ALERT_STORAGE_LIMIT = 50;
 
-const pushDeliveryAlert = (rawAlert) => {
+const DELIVERY_ALERT_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS delivery_alerts (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    alert_identifier VARCHAR(191) NOT NULL,
+    alert_type VARCHAR(64) NOT NULL,
+    severity VARCHAR(32) NOT NULL DEFAULT 'info',
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    message TEXT,
+    company_id VARCHAR(64),
+    delivery_id VARCHAR(64),
+    nf_number VARCHAR(191),
+    driver_id VARCHAR(64),
+    driver_name VARCHAR(191),
+    vehicle_label VARCHAR(191),
+    actor_id VARCHAR(64),
+    actor_name VARCHAR(191),
+    actor_role VARCHAR(64),
+    occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_delivery_alerts_company (company_id, occurred_at DESC)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`;
+
+async function ensureDeliveryAlertsTable() {
+  try {
+    await pool.query(DELIVERY_ALERT_TABLE_SQL);
+  } catch (error) {
+    console.error('[Deliveries] Falha ao garantir tabela de alertas:', error);
+  }
+}
+
+async function refreshDeliveryAlertsCache() {
+  try {
+    const [rows] = await pool.query(
+      `SELECT alert_identifier, title, description, severity, occurred_at
+         FROM delivery_alerts
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT ?`,
+      [DELIVERY_ALERT_STORAGE_LIMIT]
+    );
+
+    pushDeliveryAlert.cache = rows.map((row) => ({
+      id: row.alert_identifier || `alert-${row.id}`,
+      title: row.title || 'Alerta operacional',
+      description: row.description || '',
+      severity: row.severity || 'info',
+      timestamp: row.occurred_at ? new Date(row.occurred_at).toISOString() : new Date().toISOString(),
+    }));
+  } catch (error) {
+    console.error('[Deliveries] Falha ao atualizar cache de alertas:', error);
+  }
+}
+
+pushDeliveryAlert.cache = [];
+
+void ensureDeliveryAlertsTable()
+  .then(() => refreshDeliveryAlertsCache())
+  .catch((error) => {
+    console.error('[Deliveries] Falha ao preparar tabela de alertas:', error);
+  });
+
+const pushDeliveryAlert = async (rawAlert) => {
   if (!rawAlert || typeof rawAlert !== 'object') return;
 
-  const normalizedTimestamp = rawAlert.timestamp && typeof rawAlert.timestamp === 'string'
-    ? rawAlert.timestamp
-    : new Date().toISOString();
+  const normalizedTimestamp =
+    rawAlert.timestamp && typeof rawAlert.timestamp === 'string'
+      ? rawAlert.timestamp
+      : new Date().toISOString();
+
+  const type = rawAlert.type ? String(rawAlert.type) : 'delivery_deleted';
+  const message = rawAlert.message ? String(rawAlert.message) : null;
+  const nfNumber = rawAlert.nfNumber ? String(rawAlert.nfNumber) : null;
+  const driverName = rawAlert.driverName ? String(rawAlert.driverName) : null;
+  const vehicleLabel = rawAlert.vehicleLabel ? String(rawAlert.vehicleLabel) : null;
+  const actorName = rawAlert.actorName ? String(rawAlert.actorName) : null;
+
+  const descriptionParts = [];
+  if (message && message.trim().length) {
+    descriptionParts.push(message.trim());
+  }
+  if (nfNumber) descriptionParts.push(`NF ${nfNumber}`);
+  if (driverName) descriptionParts.push(`Motorista: ${driverName}`);
+  if (vehicleLabel) descriptionParts.push(`Veiculo: ${vehicleLabel}`);
+  if (actorName && (!driverName || actorName !== driverName)) {
+    descriptionParts.push(`Acao por: ${actorName}`);
+  }
+
+  const description = descriptionParts.length
+    ? descriptionParts.join(' | ')
+    : 'Entrega removida pelo motorista.';
 
   const normalized = {
     id: rawAlert.id ? String(rawAlert.id) : `${normalizedTimestamp}-${Math.random().toString(36).slice(2, 8)}`,
-    type: rawAlert.type ? String(rawAlert.type) : 'info',
-    severity: rawAlert.severity ? String(rawAlert.severity) : (rawAlert.type === 'delivery_deleted' ? 'danger' : 'info'),
+    type,
+    severity: rawAlert.severity ? String(rawAlert.severity) : (type === 'delivery_deleted' ? 'danger' : 'info'),
+    title:
+      rawAlert.title && typeof rawAlert.title === 'string' && rawAlert.title.trim().length
+        ? rawAlert.title.trim()
+        : type === 'delivery_deleted'
+          ? 'Entrega excluida pelo motorista'
+          : 'Alerta operacional',
+    description,
+    message,
     companyId: rawAlert.companyId ? String(rawAlert.companyId) : null,
     deliveryId: rawAlert.deliveryId ? String(rawAlert.deliveryId) : null,
-    nfNumber: rawAlert.nfNumber ? String(rawAlert.nfNumber) : null,
+    nfNumber,
     driverId: rawAlert.driverId ? String(rawAlert.driverId) : null,
-    driverName: rawAlert.driverName ? String(rawAlert.driverName) : null,
-    vehicleLabel: rawAlert.vehicleLabel ? String(rawAlert.vehicleLabel) : null,
+    driverName,
+    vehicleLabel,
     actorId: rawAlert.actorId ? String(rawAlert.actorId) : null,
-    actorName: rawAlert.actorName ? String(rawAlert.actorName) : null,
+    actorName,
     actorRole: rawAlert.actorRole ? String(rawAlert.actorRole) : null,
-    message: rawAlert.message ? String(rawAlert.message) : null,
     timestamp: normalizedTimestamp,
   };
 
-  recentDeliveryAlerts.unshift(normalized);
-  if (recentDeliveryAlerts.length > 50) {
-    recentDeliveryAlerts.length = 50;
+  try {
+    await pool.query(
+      `INSERT INTO delivery_alerts (
+        alert_identifier, alert_type, severity, title, description, message,
+        company_id, delivery_id, nf_number, driver_id, driver_name, vehicle_label,
+        actor_id, actor_name, actor_role, occurred_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        normalized.id,
+        normalized.type,
+        normalized.severity,
+        normalized.title,
+        normalized.description,
+        normalized.message,
+        normalized.companyId,
+        normalized.deliveryId,
+        normalized.nfNumber,
+        normalized.driverId,
+        normalized.driverName,
+        normalized.vehicleLabel,
+        normalized.actorId,
+        normalized.actorName,
+        normalized.actorRole,
+        new Date(normalized.timestamp),
+      ]
+    );
+  } catch (error) {
+    console.error('[Deliveries] Falha ao persistir alerta de entrega:', error);
   }
+
+  await refreshDeliveryAlertsCache();
 };
 
 
@@ -1220,7 +1339,7 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 
     const isDriverActor = userType === 'DRIVER' || userType === 'MOTORISTA';
 
-    pushDeliveryAlert({
+    await pushDeliveryAlert({
       type: 'delivery_deleted',
       severity: 'danger',
       message: isDriverActor ? 'Entrega removida pelo motorista.' : 'Entrega removida.',
@@ -1243,16 +1362,51 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 });
 
 
-app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), (req, res) => {
+app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
   try {
     const companyId = req.user.company_id ? String(req.user.company_id) : null;
-    const alerts = recentDeliveryAlerts
-      .filter((alert) => !alert.companyId || alert.companyId === companyId)
-      .slice(0, 20);
-    res.json({ success: true, data: alerts });
+    const params = [];
+    let query = `
+      SELECT alert_identifier, title, description, severity, occurred_at
+        FROM delivery_alerts
+    `;
+
+    if (companyId) {
+      query += ' WHERE company_id = ? OR company_id IS NULL';
+      params.push(companyId);
+    }
+
+    query += ' ORDER BY occurred_at DESC, id DESC LIMIT 20';
+
+    const [rows] = await pool.query(query, params);
+
+    if (Array.isArray(rows) && rows.length > 0) {
+      const alerts = rows.map((row) => {
+        const severity = typeof row.severity === 'string' ? row.severity.toLowerCase() : 'info';
+        const normalizedSeverity = severity === 'danger' || severity === 'warning' ? severity : 'info';
+        return {
+          id: row.alert_identifier || `alert-${row.id}`,
+          title: row.title || 'Alerta operacional',
+          description: row.description || '',
+          severity: normalizedSeverity,
+          timestamp: row.occurred_at ? new Date(row.occurred_at).toISOString() : new Date().toISOString(),
+        };
+      });
+
+      return res.json({ success: true, data: alerts });
+    }
+
+    const fallback = Array.isArray(pushDeliveryAlert.cache)
+      ? pushDeliveryAlert.cache.slice(0, 20)
+      : [];
+
+    return res.json({ success: true, data: fallback });
   } catch (error) {
     console.error('Erro ao obter alertas recentes:', error);
-    res.status(500).json({ success: false, error: 'Falha ao carregar alertas.' });
+    const fallback = Array.isArray(pushDeliveryAlert.cache)
+      ? pushDeliveryAlert.cache.slice(0, 20)
+      : [];
+    res.json({ success: true, data: fallback });
   }
 });
 
