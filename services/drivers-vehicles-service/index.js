@@ -135,8 +135,8 @@ app.get('/api/drivers', async (req, res) => {
     const params = [];
 
     if (status) {
-      conditions.push('d.status = ?');
-      params.push(String(status));
+      conditions.push('LOWER(d.status) = ?');
+      params.push(String(status).toLowerCase());
     }
 
     if (companyId) {
@@ -146,27 +146,46 @@ app.get('/api/drivers', async (req, res) => {
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const sql = `
-      SELECT 
-        d.*,
+      SELECT
+        d.id,
+        d.user_id,
+        d.company_id,
+        d.status,
+        d.phone_number,
+        d.tech_knowledge,
+        d.is_outsourced,
+        d.created_at,
+        d.updated_at,
+        COALESCE(
+          u.full_name,
+          u.name,
+          u.username,
+          u.email,
+          NULLIF(d.name, ''),
+          CONCAT('Motorista ', d.id)
+        ) AS driver_name,
+        COALESCE(
+          u.full_name,
+          u.name,
+          u.username,
+          u.email,
+          NULLIF(d.name, ''),
+          CONCAT('Motorista ', d.id)
+        ) AS display_name,
         u.full_name,
-        u.name,
+        u.name AS user_name,
         u.username,
         u.email
       FROM drivers d
       LEFT JOIN users u ON u.id = d.user_id
       ${whereClause}
-      ORDER BY u.full_name IS NULL, u.full_name, u.name, u.username
+      ORDER BY driver_name ASC
     `;
 
     const [rows] = await pool.query(sql, params);
-    const normalized = rows.map((row) => ({
-      ...row,
-      display_name: row.full_name || row.name || row.username || row.email || 'Motorista'
-    }));
-
-    res.json(normalized);
+    res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

@@ -427,6 +427,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       SELECT
         dn.id,
         dn.driver_id AS raw_driver_id,
+        dn.vehicle_id AS delivery_vehicle_id,
         COALESCE(dn.delivery_date_actual, dn.created_at) AS delivery_datetime,
         DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE() AS is_today,
         YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
@@ -436,11 +437,15 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         u_drv.full_name AS driver_record_name,
         u_drv.username AS driver_record_username,
         u_direct.full_name AS direct_name,
-        u_direct.username AS direct_username
+        u_direct.username AS direct_username,
+        v_delivery.plate AS delivery_vehicle_plate,
+        v_delivery.model AS delivery_vehicle_model,
+        v_delivery.brand AS delivery_vehicle_brand
       FROM delivery_notes dn
       LEFT JOIN drivers drv ON drv.id = dn.driver_id
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
       LEFT JOIN users u_direct ON u_direct.id = dn.driver_id
+      LEFT JOIN vehicles v_delivery ON v_delivery.id = dn.vehicle_id
       WHERE dn.company_id = ?
         AND (
           DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE()
@@ -488,6 +493,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         YEAR(r.start_datetime) = YEAR(CURDATE()) AND MONTH(r.start_datetime) = MONTH(CURDATE()) AS used_current_month,
         v.plate,
         v.model,
+        v.brand,
         drv.user_id AS driver_user_id
       FROM routes r
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
@@ -634,13 +640,26 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       const isToday = toBooleanLike(row.is_today);
       const isCurrentMonth = toBooleanLike(row.is_current_month);
 
+      const vehicleInfo = row.delivery_vehicle_id != null ? {
+        vehicle_id: row.delivery_vehicle_id,
+        plate: row.delivery_vehicle_plate || null,
+        model: row.delivery_vehicle_model || null,
+        brand: row.delivery_vehicle_brand || null,
+      } : null;
+
       if (isToday) {
         entry.deliveriesToday += 1;
         totalDeliveriesToday += 1;
+        if (vehicleInfo) {
+          registerVehicle(entry, 'today', vehicleInfo);
+        }
       }
       if (isCurrentMonth) {
         entry.deliveriesMonth += 1;
         totalDeliveriesMonth += 1;
+        if (vehicleInfo) {
+          registerVehicle(entry, 'month', vehicleInfo);
+        }
       }
     });
 
@@ -686,7 +705,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
           vehicleId: vehicleRow.vehicle_id != null ? toSafeString(vehicleRow.vehicle_id) : null,
           plate: vehicleRow.plate || null,
           model: vehicleRow.model || null,
-          brand: null, // A coluna 'brand' não existe na tabela 'vehicles'
+          brand: vehicleRow.brand || null,
           label,
         });
       }
