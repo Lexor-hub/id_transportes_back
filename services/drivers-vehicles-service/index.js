@@ -130,8 +130,41 @@ app.post('/api/drivers', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (re
 // Listar motoristas
 app.get('/api/drivers', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM drivers');
-    res.json(rows);
+    const { status, company_id: companyId } = req.query;
+    const conditions = [];
+    const params = [];
+
+    if (status) {
+      conditions.push('d.status = ?');
+      params.push(String(status));
+    }
+
+    if (companyId) {
+      conditions.push('d.company_id = ?');
+      params.push(Number(companyId));
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `
+      SELECT 
+        d.*,
+        u.full_name,
+        u.name,
+        u.username,
+        u.email
+      FROM drivers d
+      LEFT JOIN users u ON u.id = d.user_id
+      ${whereClause}
+      ORDER BY u.full_name IS NULL, u.full_name, u.name, u.username
+    `;
+
+    const [rows] = await pool.query(sql, params);
+    const normalized = rows.map((row) => ({
+      ...row,
+      display_name: row.full_name || row.name || row.username || row.email || 'Motorista'
+    }));
+
+    res.json(normalized);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
