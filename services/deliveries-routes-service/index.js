@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+﻿﻿require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
@@ -139,15 +139,7 @@ async function refreshDeliveryAlertsCache() {
   }
 }
 
-pushDeliveryAlert.cache = [];
-
-void ensureDeliveryAlertsTable()
-  .then(() => refreshDeliveryAlertsCache())
-  .catch((error) => {
-    console.error('[Deliveries] Falha ao preparar tabela de alertas:', error);
-  });
-
-const pushDeliveryAlert = async (rawAlert) => {
+async function pushDeliveryAlert(rawAlert) {
   if (!rawAlert || typeof rawAlert !== 'object') return;
 
   const normalizedTimestamp =
@@ -232,7 +224,15 @@ const pushDeliveryAlert = async (rawAlert) => {
   }
 
   await refreshDeliveryAlertsCache();
-};
+}
+
+pushDeliveryAlert.cache = [];
+
+void ensureDeliveryAlertsTable()
+  .then(() => refreshDeliveryAlertsCache())
+  .catch((error) => {
+    console.error('[Deliveries] Falha ao preparar tabela de alertas:', error);
+  });
 
 
 
@@ -1364,23 +1364,26 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 
 app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
   try {
-    const companyId = req.user.company_id ? String(req.user.company_id) : null;
-    const params = [];
+    const companyId = req.user?.company_id ? String(req.user.company_id) : null;
+    const params = [companyId];
     let query = `
-      SELECT alert_identifier, title, description, severity, occurred_at
+      SELECT alert_identifier, title, description, severity, occurred_at,
+             nf_number, driver_name, vehicle_label, actor_name, message
         FROM delivery_alerts
     `;
 
     if (companyId) {
-      query += ' WHERE company_id = ? OR company_id IS NULL';
-      params.push(companyId);
+      query += ' WHERE company_id = ?';
+    } else {
+      // Se não houver companyId (improvável para ADMIN/SUPERVISOR), não retorna nada.
+      return res.json({ success: true, data: [] });
     }
 
     query += ' ORDER BY occurred_at DESC, id DESC LIMIT 20';
 
     const [rows] = await pool.query(query, params);
 
-    if (Array.isArray(rows) && rows.length > 0) {
+    if (Array.isArray(rows)) {
       const alerts = rows.map((row) => {
         const severity = typeof row.severity === 'string' ? row.severity.toLowerCase() : 'info';
         const normalizedSeverity = severity === 'danger' || severity === 'warning' ? severity : 'info';
@@ -1390,23 +1393,22 @@ app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), asy
           description: row.description || '',
           severity: normalizedSeverity,
           timestamp: row.occurred_at ? new Date(row.occurred_at).toISOString() : new Date().toISOString(),
+          // Adiciona os campos que faltavam para o frontend
+          nfNumber: row.nf_number,
+          driverName: row.driver_name,
+          vehicleLabel: row.vehicle_label,
+          actorName: row.actor_name,
+          message: row.message,
         };
       });
 
       return res.json({ success: true, data: alerts });
     }
 
-    const fallback = Array.isArray(pushDeliveryAlert.cache)
-      ? pushDeliveryAlert.cache.slice(0, 20)
-      : [];
-
-    return res.json({ success: true, data: fallback });
+    return res.json({ success: true, data: [] });
   } catch (error) {
     console.error('Erro ao obter alertas recentes:', error);
-    const fallback = Array.isArray(pushDeliveryAlert.cache)
-      ? pushDeliveryAlert.cache.slice(0, 20)
-      : [];
-    res.json({ success: true, data: fallback });
+    res.status(500).json({ success: false, error: 'Erro ao buscar alertas.' });
   }
 });
 
