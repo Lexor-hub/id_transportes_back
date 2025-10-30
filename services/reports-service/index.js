@@ -443,6 +443,10 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
     const deliveryOccurrencesHasCompanyId = await hasColumn('delivery_occurrences', 'company_id');
     const routesHasCompanyId = await hasColumn('routes', 'company_id');
     const trackingHasCompanyId = await hasColumn('tracking_points', 'company_id');
+    const deliveryNotesHasVehicleId = await hasColumn('delivery_notes', 'vehicle_id');
+    const vehiclesHasPlate = await hasColumn('vehicles', 'plate');
+    const vehiclesHasModel = await hasColumn('vehicles', 'model');
+    const vehiclesHasBrand = await hasColumn('vehicles', 'brand');
 
     if (!driversHasCompanyId) {
       console.warn('[Reports] drivers.company_id ausente. Retornando dados sem filtro específico por empresa.');
@@ -463,11 +467,27 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       driversHasCompanyId ? [companyId] : []
     );
 
+    const deliveryVehicleSelect = deliveryNotesHasVehicleId
+      ? [
+          '        dn.vehicle_id AS delivery_vehicle_id,',
+          vehiclesHasPlate ? '        v_delivery.plate AS delivery_vehicle_plate,' : '        NULL AS delivery_vehicle_plate,',
+          vehiclesHasModel ? '        v_delivery.model AS delivery_vehicle_model,' : '        NULL AS delivery_vehicle_model,',
+          vehiclesHasBrand ? '        v_delivery.brand AS delivery_vehicle_brand' : '        NULL AS delivery_vehicle_brand',
+        ].join('\n')
+      : [
+          '        NULL AS delivery_vehicle_id,',
+          '        NULL AS delivery_vehicle_plate,',
+          '        NULL AS delivery_vehicle_model,',
+          '        NULL AS delivery_vehicle_brand',
+        ].join('\n');
+
+    const deliveryVehicleJoin = deliveryNotesHasVehicleId ? '\n      LEFT JOIN vehicles v_delivery ON v_delivery.id = dn.vehicle_id' : '';
+
     const deliveriesSql = `
       SELECT
         dn.id,
         dn.driver_id AS raw_driver_id,
-        dn.vehicle_id AS delivery_vehicle_id,
+${deliveryVehicleSelect}
         COALESCE(dn.delivery_date_actual, dn.created_at) AS delivery_datetime,
         DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE() AS is_today,
         YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
@@ -478,14 +498,10 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         u_drv.username AS driver_record_username,
         u_direct.full_name AS direct_name,
         u_direct.username AS direct_username,
-        v_delivery.plate AS delivery_vehicle_plate,
-        v_delivery.model AS delivery_vehicle_model,
-        v_delivery.brand AS delivery_vehicle_brand
       FROM delivery_notes dn
       LEFT JOIN drivers drv ON drv.id = dn.driver_id
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
-      LEFT JOIN users u_direct ON u_direct.id = dn.driver_id
-      LEFT JOIN vehicles v_delivery ON v_delivery.id = dn.vehicle_id
+      LEFT JOIN users u_direct ON u_direct.id = dn.driver_id${deliveryVehicleJoin}
       ${deliveryNotesHasCompanyId ? 'WHERE dn.company_id = ? AND (' : 'WHERE ('}
           DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE()
           OR (
