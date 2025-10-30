@@ -1269,8 +1269,8 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
       try {
         const [driverInfo] = await pool.query(
           `SELECT COALESCE(u.full_name, u.username, u.email, d.name) AS driver_name
-             FROM drivers d
-             LEFT JOIN users u ON d.user_id = u.id
+            FROM drivers d
+            LEFT JOIN users u ON d.user_id = u.id
            WHERE d.id = ? LIMIT 1`,
           [delivery.driver_id]
         );
