@@ -68,6 +68,34 @@ const resolveReceiptTargetUrl = (rawUrl, rawPath) => {
   }
 };
 
+const columnPresenceCache = new Map();
+async function hasColumn(table, column) {
+  const cacheKey = `${table}:${column}`;
+  if (columnPresenceCache.has(cacheKey)) {
+    return columnPresenceCache.get(cacheKey);
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT 1
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+          AND COLUMN_NAME = ?
+        LIMIT 1`,
+      [table, column]
+    );
+
+    const exists = Array.isArray(rows) && rows.length > 0;
+    columnPresenceCache.set(cacheKey, exists);
+    return exists;
+  } catch (error) {
+    console.warn(`[Reports] Falha ao verificar coluna ${table}.${column}:`, error?.message || error);
+    columnPresenceCache.set(cacheKey, false);
+    return false;
+  }
+}
+
 const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e777419e155aab4f5b18b37d280d05a';
 
 // Middleware de autenticação
@@ -410,8 +438,19 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       return res.status(400).json({ success: false, error: 'Empresa nao informada no token.' });
     }
 
+    const driversHasCompanyId = await hasColumn('drivers', 'company_id');
+    const deliveryNotesHasCompanyId = await hasColumn('delivery_notes', 'company_id');
+    const deliveryOccurrencesHasCompanyId = await hasColumn('delivery_occurrences', 'company_id');
+    const routesHasCompanyId = await hasColumn('routes', 'company_id');
+    const trackingHasCompanyId = await hasColumn('tracking_points', 'company_id');
+
+    if (!driversHasCompanyId) {
+      console.warn('[Reports] drivers.company_id ausente. Retornando dados sem filtro específico por empresa.');
+    }
+
     const [driverRows] = await pool.query(
-      `SELECT
+      `
+      SELECT
         d.id AS driver_id,
         d.user_id AS driver_user_id,
         u.full_name AS driver_name,
@@ -419,8 +458,9 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         u.email AS driver_email
       FROM drivers d
       LEFT JOIN users u ON u.id = d.user_id
-      WHERE d.company_id = ?`,
-      [companyId]
+      ${driversHasCompanyId ? 'WHERE d.company_id = ?' : ''}
+      `,
+      driversHasCompanyId ? [companyId] : []
     );
 
     const deliveriesSql = `
@@ -446,8 +486,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
       LEFT JOIN users u_direct ON u_direct.id = dn.driver_id
       LEFT JOIN vehicles v_delivery ON v_delivery.id = dn.vehicle_id
-      WHERE dn.company_id = ?
-        AND (
+      ${deliveryNotesHasCompanyId ? 'WHERE dn.company_id = ? AND (' : 'WHERE ('}
           DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE()
           OR (
             YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
@@ -455,7 +494,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
           )
         )
     `;
-    const [deliveryRows] = await pool.query(deliveriesSql, [companyId]);
+    const [deliveryRows] = await pool.query(deliveriesSql, deliveryNotesHasCompanyId ? [companyId] : []);
 
     const occurrencesSql = `
       SELECT
@@ -474,8 +513,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       LEFT JOIN drivers drv ON drv.id = dn.driver_id
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
       LEFT JOIN users u_direct ON u_direct.id = do.driver_id
-      WHERE do.company_id = ?
-        AND (
+      ${deliveryOccurrencesHasCompanyId ? 'WHERE do.company_id = ? AND (' : 'WHERE ('}
           DATE(do.created_at) = CURDATE()
           OR (
             YEAR(do.created_at) = YEAR(CURDATE())
@@ -483,7 +521,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
           )
         )
     `;
-    const [occurrenceRows] = await pool.query(occurrencesSql, [companyId]);
+    const [occurrenceRows] = await pool.query(occurrencesSql, deliveryOccurrencesHasCompanyId ? [companyId] : []);
 
     const routesSql = `
       SELECT
@@ -498,8 +536,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       FROM routes r
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
       LEFT JOIN drivers drv ON drv.id = r.driver_id
-      WHERE r.company_id = ?
-        AND r.vehicle_id IS NOT NULL
+      ${routesHasCompanyId ? 'WHERE r.company_id = ? AND' : 'WHERE'} r.vehicle_id IS NOT NULL
         AND (
           DATE(r.start_datetime) = CURDATE()
           OR (
@@ -508,7 +545,7 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
           )
         )
     `;
-    const [routeRows] = await pool.query(routesSql, [companyId]);
+    const [routeRows] = await pool.query(routesSql, routesHasCompanyId ? [companyId] : []);
     let trackingVehicleRows = [];
     try {
       const trackingVehicleSql = `
@@ -524,14 +561,13 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
         FROM tracking_points tp
         LEFT JOIN vehicles v ON v.id = tp.vehicle_id
         LEFT JOIN drivers drv ON drv.id = tp.driver_id
-        WHERE tp.company_id = ?
-          AND tp.vehicle_id IS NOT NULL
+        ${trackingHasCompanyId ? 'WHERE tp.company_id = ? AND' : 'WHERE'} tp.vehicle_id IS NOT NULL
           AND (
             DATE(tp.timestamp) = CURDATE()
             OR (YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()))
           )
       `;
-      const [trackingRows] = await pool.query(trackingVehicleSql, [companyId]);
+      const [trackingRows] = await pool.query(trackingVehicleSql, trackingHasCompanyId ? [companyId] : []);
       trackingVehicleRows = Array.isArray(trackingRows) ? trackingRows : [];
     } catch (error) {
       console.warn('[Reports] tracking_points without vehicle_id, skipping vehicle aggregation via tracking.', error && error.message ? error.message : error);

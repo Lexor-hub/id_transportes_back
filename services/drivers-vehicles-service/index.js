@@ -29,6 +29,33 @@ const swaggerSpec = swaggerJsdoc(options);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use(cors({ origin: '*', credentials: true }));
 
+let driverSchemaCache = null;
+async function getDriverSchema() {
+  if (driverSchemaCache) {
+    return driverSchemaCache;
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'drivers'`
+    );
+
+    const columns = Array.isArray(rows) ? rows.map((row) => row.COLUMN_NAME) : [];
+    driverSchemaCache = {
+      hasCompanyId: columns.includes('company_id'),
+      hasStatus: columns.includes('status'),
+      hasName: columns.includes('name'),
+    };
+  } catch (error) {
+    console.warn('[Drivers] Falha ao inspecionar colunas da tabela drivers. Assumindo colunas padrão.', error && error.message ? error.message : error);
+    driverSchemaCache = { hasCompanyId: true, hasStatus: true, hasName: true };
+  }
+
+  return driverSchemaCache;
+}
+
 /**
  * @swagger
  * /api/drivers:
@@ -130,48 +157,52 @@ app.post('/api/drivers', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (re
 // Listar motoristas
 app.get('/api/drivers', async (req, res) => {
   try {
+    const schema = await getDriverSchema();
     const { status, company_id: companyId } = req.query;
     const conditions = [];
     const params = [];
 
     if (status) {
-      conditions.push('LOWER(d.status) = ?');
-      params.push(String(status).toLowerCase());
+      if (schema.hasStatus) {
+        conditions.push('LOWER(d.status) = ?');
+        params.push(String(status).toLowerCase());
+      } else {
+        console.warn('[Drivers] Parâmetro "status" ignorado porque a coluna drivers.status não existe na base atual.');
+      }
     }
 
     if (companyId) {
-      conditions.push('d.company_id = ?');
-      params.push(Number(companyId));
+      const numericCompany = Number(companyId);
+      if (Number.isFinite(numericCompany)) {
+        const companyColumn = schema.hasCompanyId ? 'd.company_id' : 'u.company_id';
+        conditions.push(`${companyColumn} = ?`);
+        params.push(numericCompany);
+      }
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const companySelect = schema.hasCompanyId ? 'd.company_id AS company_id' : 'u.company_id AS company_id';
+    const statusSelect = schema.hasStatus ? 'd.status AS status' : `'active' AS status`;
+
+    const nameSources = ['u.full_name', 'u.name', 'u.username', 'u.email'];
+    if (schema.hasName) {
+      nameSources.push("NULLIF(d.name, '')");
+    }
+    const nameExpression = `COALESCE(${nameSources.join(', ')}, CONCAT('Motorista ', d.id))`;
+
     const sql = `
       SELECT
         d.id,
         d.user_id,
-        d.company_id,
-        d.status,
+        ${companySelect},
+        ${statusSelect},
         d.phone_number,
         d.tech_knowledge,
         d.is_outsourced,
         d.created_at,
         d.updated_at,
-        COALESCE(
-          u.full_name,
-          u.name,
-          u.username,
-          u.email,
-          NULLIF(d.name, ''),
-          CONCAT('Motorista ', d.id)
-        ) AS driver_name,
-        COALESCE(
-          u.full_name,
-          u.name,
-          u.username,
-          u.email,
-          NULLIF(d.name, ''),
-          CONCAT('Motorista ', d.id)
-        ) AS display_name,
+        ${nameExpression} AS driver_name,
+        ${nameExpression} AS display_name,
         u.full_name,
         u.name AS user_name,
         u.username,
@@ -185,7 +216,8 @@ app.get('/api/drivers', async (req, res) => {
     const [rows] = await pool.query(sql, params);
     res.json({ success: true, data: rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('[Drivers] Erro ao listar motoristas:', err);
+    res.status(500).json({ success: false, error: err?.message || 'Erro interno ao listar motoristas.' });
   }
 });
 
