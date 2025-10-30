@@ -65,7 +65,7 @@ async function getUserSchema() {
   try {
     const [rows] = await pool.query(
       `SELECT COLUMN_NAME
-         FROM information_schema.COLUMNS
+        FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
     );
 
@@ -75,10 +75,11 @@ async function getUserSchema() {
       hasFullName: columns.includes('full_name'),
       hasUsername: columns.includes('username'),
       hasEmail: columns.includes('email'),
+      hasCompanyId: columns.includes('company_id'),
     };
   } catch (error) {
     console.warn('[Drivers] Falha ao inspecionar colunas da tabela users. Assumindo colunas padrão.', error && error.message ? error.message : error);
-    userSchemaCache = { hasName: false, hasFullName: true, hasUsername: true, hasEmail: true };
+    userSchemaCache = { hasName: false, hasFullName: true, hasUsername: true, hasEmail: true, hasCompanyId: false };
   }
 
   return userSchemaCache;
@@ -200,17 +201,29 @@ app.get('/api/drivers', async (req, res) => {
       }
     }
 
-    if (companyId) {
+    let companyColumn = null;
+    if (schema.hasCompanyId) {
+      companyColumn = 'd.company_id';
+    } else if (userSchema.hasCompanyId) {
+      companyColumn = 'u.company_id';
+    }
+
+    if (companyId && companyColumn) {
       const numericCompany = Number(companyId);
       if (Number.isFinite(numericCompany)) {
-        const companyColumn = schema.hasCompanyId ? 'd.company_id' : 'u.company_id';
         conditions.push(`${companyColumn} = ?`);
         params.push(numericCompany);
       }
+    } else if (companyId && !companyColumn) {
+      console.warn('[Drivers] Parâmetro "company_id" ignorado porque nem drivers.company_id nem users.company_id existem na base atual.');
     }
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const companySelect = schema.hasCompanyId ? 'd.company_id AS company_id' : 'u.company_id AS company_id';
+    const companySelect = schema.hasCompanyId
+      ? 'd.company_id AS company_id'
+      : userSchema.hasCompanyId
+        ? 'u.company_id AS company_id'
+        : 'NULL AS company_id';
     const statusSelect = schema.hasStatus ? 'd.status AS status' : `'active' AS status`;
 
     const nameSources = [];
