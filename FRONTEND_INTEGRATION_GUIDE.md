@@ -1736,40 +1736,6 @@ export default {
       </div>
     </div>
     
-    <!-- Charts Section -->
-    <div class="charts-section">
-      <div class="chart-container">
-        <h3>Entregas por Status</h3>
-        <canvas ref="deliveryChart"></canvas>
-      </div>
-      
-      <div class="chart-container">
-        <h3>Performance dos Motoristas</h3>
-        <canvas ref="driverChart"></canvas>
-      </div>
-    </div>
-    
-    <!-- Real-time Updates -->
-    <div class="realtime-section">
-      <h3>Atualizações em Tempo Real</h3>
-      <div class="updates-list">
-        <div 
-          v-for="update in recentUpdates" 
-          :key="update.id"
-          class="update-item"
-          :class="update.type"
-        >
-          <div class="update-icon">
-            <i :class="getUpdateIcon(update.type)"></i>
-          </div>
-          <div class="update-content">
-            <p>{{ update.message }}</p>
-            <span class="update-time">{{ formatTime(update.timestamp) }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-    
     <!-- Alerts Section -->
     <div class="alerts-section">
       <h3>Alertas</h3>
@@ -1806,16 +1772,12 @@ export default {
       kpis: [],
       recentUpdates: [],
       alerts: [],
-      deliveryChart: null,
-      driverChart: null,
       updateInterval: null
     };
   },
   
   async mounted() {
     await this.loadDashboardData();
-    this.initializeCharts();
-    this.startRealTimeUpdates();
   },
   
   methods: {
@@ -1882,60 +1844,6 @@ export default {
       return supervisorKPIs.filter(kpi => kpi.value !== undefined);
     },
     
-    initializeCharts() {
-      this.createDeliveryChart();
-      this.createDriverChart();
-    },
-    
-    createDeliveryChart() {
-      const ctx = this.$refs.deliveryChart.getContext('2d');
-      
-      this.deliveryChart = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: ['Entregues', 'Pendentes', 'Em Trânsito', 'Canceladas'],
-          datasets: [{
-            data: [85, 10, 3, 2],
-            backgroundColor: ['#28a745', '#ffc107', '#17a2b8', '#dc3545']
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: {
-              position: 'bottom'
-            }
-          }
-        }
-      });
-    },
-    
-    createDriverChart() {
-      const ctx = this.$refs.driverChart.getContext('2d');
-      
-      this.driverChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: ['João', 'Maria', 'Pedro', 'Ana', 'Carlos'],
-          datasets: [{
-            label: 'Entregas Realizadas',
-            data: [25, 23, 20, 18, 15],
-            backgroundColor: '#007bff'
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            y: {
-              beginAtZero: true
-            }
-          }
-        }
-      });
-    },
-    
     startRealTimeUpdates() {
       this.updateInterval = setInterval(() => {
         this.loadDashboardData();
@@ -1981,14 +1889,6 @@ export default {
   beforeDestroy() {
     if (this.updateInterval) {
       clearInterval(this.updateInterval);
-    }
-    
-    if (this.deliveryChart) {
-      this.deliveryChart.destroy();
-    }
-    
-    if (this.driverChart) {
-      this.driverChart.destroy();
     }
   }
 };
@@ -2050,26 +1950,6 @@ export default {
 
 .kpi-change.down {
   color: #dc3545;
-}
-
-.charts-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 30px;
-}
-
-.chart-container {
-  background: white;
-  border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-  height: 300px;
-}
-
-.chart-container h3 {
-  margin: 0 0 20px 0;
-  font-size: 18px;
 }
 
 .realtime-section,
