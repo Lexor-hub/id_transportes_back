@@ -56,6 +56,34 @@ async function getDriverSchema() {
   return driverSchemaCache;
 }
 
+let userSchemaCache = null;
+async function getUserSchema() {
+  if (userSchemaCache) {
+    return userSchemaCache;
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+
+    const columns = Array.isArray(rows) ? rows.map((row) => row.COLUMN_NAME) : [];
+    userSchemaCache = {
+      hasName: columns.includes('name'),
+      hasFullName: columns.includes('full_name'),
+      hasUsername: columns.includes('username'),
+      hasEmail: columns.includes('email'),
+    };
+  } catch (error) {
+    console.warn('[Drivers] Falha ao inspecionar colunas da tabela users. Assumindo colunas padrão.', error && error.message ? error.message : error);
+    userSchemaCache = { hasName: false, hasFullName: true, hasUsername: true, hasEmail: true };
+  }
+
+  return userSchemaCache;
+}
+
 /**
  * @swagger
  * /api/drivers:
@@ -158,6 +186,7 @@ app.post('/api/drivers', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), async (re
 app.get('/api/drivers', async (req, res) => {
   try {
     const schema = await getDriverSchema();
+    const userSchema = await getUserSchema();
     const { status, company_id: companyId } = req.query;
     const conditions = [];
     const params = [];
@@ -184,11 +213,23 @@ app.get('/api/drivers', async (req, res) => {
     const companySelect = schema.hasCompanyId ? 'd.company_id AS company_id' : 'u.company_id AS company_id';
     const statusSelect = schema.hasStatus ? 'd.status AS status' : `'active' AS status`;
 
-    const nameSources = ['u.full_name', 'u.name', 'u.username', 'u.email'];
+    const nameSources = [];
+    if (userSchema.hasFullName) nameSources.push('u.full_name');
+    if (userSchema.hasName) nameSources.push('u.name');
+    if (userSchema.hasUsername) nameSources.push('u.username');
+    if (userSchema.hasEmail) nameSources.push('u.email');
     if (schema.hasName) {
       nameSources.push("NULLIF(d.name, '')");
     }
+    if (nameSources.length === 0) {
+      nameSources.push("CONCAT('Motorista ', d.id)");
+    }
     const nameExpression = `COALESCE(${nameSources.join(', ')}, CONCAT('Motorista ', d.id))`;
+
+    const fullNameSelect = userSchema.hasFullName ? 'u.full_name AS full_name' : 'NULL AS full_name';
+    const userNameSelect = userSchema.hasName ? 'u.name AS user_name' : 'NULL AS user_name';
+    const usernameSelect = userSchema.hasUsername ? 'u.username AS username' : 'NULL AS username';
+    const emailSelect = userSchema.hasEmail ? 'u.email AS email' : 'NULL AS email';
 
     const sql = `
       SELECT
@@ -203,10 +244,10 @@ app.get('/api/drivers', async (req, res) => {
         d.updated_at,
         ${nameExpression} AS driver_name,
         ${nameExpression} AS display_name,
-        u.full_name,
-        u.name AS user_name,
-        u.username,
-        u.email
+        ${fullNameSelect},
+        ${userNameSelect},
+        ${usernameSelect},
+        ${emailSelect}
       FROM drivers d
       LEFT JOIN users u ON u.id = d.user_id
       ${whereClause}
