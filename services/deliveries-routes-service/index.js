@@ -1194,6 +1194,56 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
   }
 });
 
+app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
+  try {
+    const companyId = req.user?.company_id ? String(req.user.company_id) : null;
+    const params = [companyId];
+    let query = `
+      SELECT alert_identifier, title, description, severity, occurred_at,
+             nf_number, driver_name, vehicle_label, actor_name, message
+        FROM delivery_alerts
+    `;
+
+    if (companyId) {
+      query += ' WHERE company_id = ?';
+    } else {
+      // Se não houver companyId (improvável para ADMIN/SUPERVISOR), não retorna nada.
+      return res.json({ success: true, data: [] });
+    }
+
+    query += ' ORDER BY occurred_at DESC, id DESC LIMIT 20';
+
+    const [rows] = await pool.query(query, params);
+
+    if (Array.isArray(rows)) {
+      const alerts = rows.map((row) => {
+        const severity = typeof row.severity === 'string' ? row.severity.toLowerCase() : 'info';
+        const normalizedSeverity = severity === 'danger' || severity === 'warning' ? severity : 'info';
+        return {
+          id: row.alert_identifier || `alert-${row.id}`,
+          title: row.title || 'Alerta operacional',
+          description: row.description || '',
+          severity: normalizedSeverity,
+          timestamp: row.occurred_at ? new Date(row.occurred_at).toISOString() : new Date().toISOString(),
+          // Adiciona os campos que faltavam para o frontend
+          nfNumber: row.nf_number,
+          driverName: row.driver_name,
+          vehicleLabel: row.vehicle_label,
+          actorName: row.actor_name,
+          message: row.message,
+        };
+      });
+
+      return res.json({ success: true, data: alerts });
+    }
+
+    return res.json({ success: true, data: [] });
+  } catch (error) {
+    console.error('Erro ao obter alertas recentes:', error);
+    res.status(500).json({ success: false, error: 'Erro ao buscar alertas.' });
+  }
+});
+
 app.get('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (req, res) => {
   try {
     const deliveryId = req.params.id;
@@ -1362,55 +1412,7 @@ app.delete('/api/deliveries/:id', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), 
 });
 
 
-app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), async (req, res) => {
-  try {
-    const companyId = req.user?.company_id ? String(req.user.company_id) : null;
-    const params = [companyId];
-    let query = `
-      SELECT alert_identifier, title, description, severity, occurred_at,
-             nf_number, driver_name, vehicle_label, actor_name, message
-        FROM delivery_alerts
-    `;
 
-    if (companyId) {
-      query += ' WHERE company_id = ?';
-    } else {
-      // Se não houver companyId (improvável para ADMIN/SUPERVISOR), não retorna nada.
-      return res.json({ success: true, data: [] });
-    }
-
-    query += ' ORDER BY occurred_at DESC, id DESC LIMIT 20';
-
-    const [rows] = await pool.query(query, params);
-
-    if (Array.isArray(rows)) {
-      const alerts = rows.map((row) => {
-        const severity = typeof row.severity === 'string' ? row.severity.toLowerCase() : 'info';
-        const normalizedSeverity = severity === 'danger' || severity === 'warning' ? severity : 'info';
-        return {
-          id: row.alert_identifier || `alert-${row.id}`,
-          title: row.title || 'Alerta operacional',
-          description: row.description || '',
-          severity: normalizedSeverity,
-          timestamp: row.occurred_at ? new Date(row.occurred_at).toISOString() : new Date().toISOString(),
-          // Adiciona os campos que faltavam para o frontend
-          nfNumber: row.nf_number,
-          driverName: row.driver_name,
-          vehicleLabel: row.vehicle_label,
-          actorName: row.actor_name,
-          message: row.message,
-        };
-      });
-
-      return res.json({ success: true, data: alerts });
-    }
-
-    return res.json({ success: true, data: [] });
-  } catch (error) {
-    console.error('Erro ao obter alertas recentes:', error);
-    res.status(500).json({ success: false, error: 'Erro ao buscar alertas.' });
-  }
-});
 
 app.put('/api/deliveries/:id/status', authorize(['DRIVER', 'ADMIN', 'SUPERVISOR']), async (req, res) => {
   try {
