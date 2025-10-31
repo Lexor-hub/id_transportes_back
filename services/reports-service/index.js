@@ -547,16 +547,28 @@ ${selectClause}
     `;
     const [occurrenceRows] = await pool.query(occurrencesSql, deliveryOccurrencesHasCompanyId ? [companyId] : []);
 
+    const routeVehicleColumns = [
+      vehiclesHasPlate ? 'v.plate AS plate' : 'NULL AS plate',
+      vehiclesHasModel ? 'v.model AS model' : 'NULL AS model',
+      vehiclesHasBrand ? 'v.brand AS brand' : 'NULL AS brand',
+    ];
+
+    const routesSelectColumns = [
+      'r.driver_id',
+      'r.vehicle_id',
+      'DATE(r.start_datetime) = CURDATE() AS used_today',
+      `YEAR(r.start_datetime) = YEAR(CURDATE()) AND MONTH(r.start_datetime) = MONTH(CURDATE()) AS used_current_month`,
+      ...routeVehicleColumns,
+      'drv.user_id AS driver_user_id',
+    ];
+
+    const routesSelectClause = routesSelectColumns
+      .map((column) => `        ${column}`)
+      .join(',\n');
+
     const routesSql = `
       SELECT
-        r.driver_id,
-        r.vehicle_id,
-        DATE(r.start_datetime) = CURDATE() AS used_today,
-        YEAR(r.start_datetime) = YEAR(CURDATE()) AND MONTH(r.start_datetime) = MONTH(CURDATE()) AS used_current_month,
-        v.plate,
-        v.model,
-        v.brand,
-        drv.user_id AS driver_user_id
+${routesSelectClause}
       FROM routes r
       LEFT JOIN vehicles v ON v.id = r.vehicle_id
       LEFT JOIN drivers drv ON drv.id = r.driver_id
@@ -569,19 +581,32 @@ ${selectClause}
           )
         )
     `;
+
     const [routeRows] = await pool.query(routesSql, routesHasCompanyId ? [companyId] : []);
     let trackingVehicleRows = [];
     try {
+      const trackingVehicleColumns = [
+        vehiclesHasPlate ? 'v.plate AS plate' : 'NULL AS plate',
+        vehiclesHasModel ? 'v.model AS model' : 'NULL AS model',
+        vehiclesHasBrand ? 'v.brand AS brand' : 'NULL AS brand',
+      ];
+
+      const trackingSelectColumns = [
+        'tp.driver_id',
+        'tp.vehicle_id',
+        'DATE(tp.timestamp) = CURDATE() AS used_today',
+        `YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()) AS used_current_month`,
+        ...trackingVehicleColumns,
+        'drv.user_id AS driver_user_id',
+      ];
+
+      const trackingSelectClause = trackingSelectColumns
+        .map((column) => `          ${column}`)
+        .join(',\n');
+
       const trackingVehicleSql = `
         SELECT
-          tp.driver_id,
-          tp.vehicle_id,
-          DATE(tp.timestamp) = CURDATE() AS used_today,
-          YEAR(tp.timestamp) = YEAR(CURDATE()) AND MONTH(tp.timestamp) = MONTH(CURDATE()) AS used_current_month,
-          v.plate,
-          v.model,
-          v.brand,
-          drv.user_id AS driver_user_id
+${trackingSelectClause}
         FROM tracking_points tp
         LEFT JOIN vehicles v ON v.id = tp.vehicle_id
         LEFT JOIN drivers drv ON drv.id = tp.driver_id
