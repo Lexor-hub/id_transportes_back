@@ -440,7 +440,8 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
 
     const driversHasCompanyId = await hasColumn('drivers', 'company_id');
     const deliveryNotesHasCompanyId = await hasColumn('delivery_notes', 'company_id');
-    const deliveryOccurrencesHasCompanyId = await hasColumn('delivery_occurrences', 'company_id');
+      const deliveryOccurrencesHasCompanyId = await hasColumn('delivery_occurrences', 'company_id');
+      const deliveryAlertsHasCompanyId = await hasColumn('delivery_alerts', 'company_id');
     const routesHasCompanyId = await hasColumn('routes', 'company_id');
     const trackingHasCompanyId = await hasColumn('tracking_points', 'company_id');
     const deliveryNotesHasVehicleId = await hasColumn('delivery_notes', 'vehicle_id');
@@ -547,6 +548,33 @@ ${selectClause}
     `;
     const [occurrenceRows] = await pool.query(occurrencesSql, deliveryOccurrencesHasCompanyId ? [companyId] : []);
 
+    const alertsSql = `
+      SELECT
+        da.id,
+        da.driver_id AS alert_driver_id,
+        da.driver_name AS alert_driver_name,
+        da.occurred_at,
+        DATE(da.occurred_at) = CURDATE() AS is_today,
+        YEAR(da.occurred_at) = YEAR(CURDATE()) AND MONTH(da.occurred_at) = MONTH(CURDATE()) AS is_current_month,
+        dn.driver_id AS related_delivery_driver_id,
+        drv.id AS driver_record_id,
+        drv.user_id AS driver_user_id,
+        u_drv.full_name AS driver_record_name
+      FROM delivery_alerts da
+      LEFT JOIN delivery_notes dn ON dn.id = da.delivery_id
+      LEFT JOIN drivers drv ON drv.id = dn.driver_id
+      LEFT JOIN users u_drv ON u_drv.id = drv.user_id
+      ${deliveryAlertsHasCompanyId ? 'WHERE da.company_id = ? AND' : 'WHERE'} da.alert_type = 'delivery_deleted'
+        AND (
+          DATE(da.occurred_at) = CURDATE()
+          OR (
+            YEAR(da.occurred_at) = YEAR(CURDATE())
+            AND MONTH(da.occurred_at) = MONTH(CURDATE())
+          )
+        )
+    `;
+    const [deliveryAlertRows] = await pool.query(alertsSql, deliveryAlertsHasCompanyId ? [companyId] : []);
+
     const routeVehicleColumns = [
       vehiclesHasPlate ? 'v.plate AS plate' : 'NULL AS plate',
       vehiclesHasModel ? 'v.model AS model' : 'NULL AS model',
@@ -644,12 +672,17 @@ ${trackingSelectClause}
       driverRecordId,
       driverUserId,
       rawDriverId,
+      fallbackKey = null,
       name,
       username,
     }) => {
       const sanitizedRecordId = driverRecordId != null ? Number(driverRecordId) : null;
       const sanitizedUserId = driverUserId != null ? Number(driverUserId) : null;
       const sanitizedRawId = rawDriverId != null ? Number(rawDriverId) : null;
+      const sanitizedFallbackKey =
+        fallbackKey !== null && fallbackKey !== undefined
+          ? String(fallbackKey).trim()
+          : null;
 
       let key = null;
       if (Number.isFinite(sanitizedRecordId)) {
@@ -658,6 +691,10 @@ ${trackingSelectClause}
         key = `user:${sanitizedUserId}`;
       } else if (Number.isFinite(sanitizedRawId)) {
         key = `user:${sanitizedRawId}`;
+      } else if (sanitizedFallbackKey) {
+        key = `fallback:${sanitizedFallbackKey}`;
+      } else if (name && typeof name === 'string' && name.trim().length) {
+        key = `name:${name.trim().toLowerCase()}`;
       }
 
       if (!key) {
@@ -753,12 +790,52 @@ ${trackingSelectClause}
         driverRecordId: row.driver_record_id,
         driverUserId: row.driver_user_id,
         rawDriverId: row.occurrence_driver_id ?? row.related_delivery_driver_id,
-        name: row.driver_record_name || row.direct_name,
+        fallbackKey:
+          row.occurrence_driver_id ??
+          row.related_delivery_driver_id ??
+          row.driver_record_name ??
+          row.direct_name ??
+          null,
+        name: row.driver_record_name || row.direct_name || null,
         username: null,
       });
 
       if (!entry) {
         return;
+      }
+
+      const isToday = toBooleanLike(row.is_today);
+      const isCurrentMonth = toBooleanLike(row.is_current_month);
+
+      if (isToday) {
+        entry.occurrencesToday += 1;
+      }
+      if (isCurrentMonth) {
+        entry.occurrencesMonth += 1;
+      }
+    });
+
+    deliveryAlertRows.forEach((row) => {
+      const entry = ensureDriverEntry({
+        driverRecordId: row.driver_record_id,
+        driverUserId: row.driver_user_id,
+        rawDriverId: row.alert_driver_id ?? row.related_delivery_driver_id,
+        fallbackKey:
+          row.alert_driver_id ??
+          row.related_delivery_driver_id ??
+          row.driver_record_name ??
+          row.alert_driver_name ??
+          null,
+        name: row.driver_record_name || row.alert_driver_name || null,
+        username: null,
+      });
+
+      if (!entry) {
+        return;
+      }
+
+      if ((!entry.name || entry.name === 'Motorista') && row.alert_driver_name) {
+        entry.name = row.alert_driver_name;
       }
 
       const isToday = toBooleanLike(row.is_today);
