@@ -101,10 +101,7 @@ const jwtSecret = process.env.JWT_SECRET || 'fda76ff877a92f9a86e7831fad372e2d9e7
 // Middleware de autenticação
 function authorize(roles = []) {
   return (req, res, next) => {
-    // Debugging: accept token via Authorization header or ?token query param (temporary)
-    console.log('[Reports] Authorization header:', req.headers.authorization);
-    console.log('[Reports] query.token:', req.query && req.query.token ? '<present>' : '<none>');
-    const token = req.headers.authorization?.split(' ')[1] || (req.query && req.query.token) || null;
+    const token = req.headers.authorization?.split(' ')[1] || null;
     if (!token) return res.status(401).json({ success: false, error: { message: 'Token não fornecido' } });
 
     try {

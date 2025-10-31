@@ -175,62 +175,57 @@ console.log('[Receipts] Configurações de OCR e Storage carregadas:', {
 
 // FunÃƒÂ§ÃƒÂ£o para enviar arquivo ao Google Cloud Storage
 async function uploadToGCS(file, folder = 'receipts') {
-  // SOLUÇÃO IMEDIATA: Forçar o salvamento local na pasta de uploads do serviço de entregas,
-  // que é publicamente acessível na Vercel.
-  // A solução ideal a longo prazo é configurar o GCS com as variáveis de ambiente.
-  console.warn(`[Receipts] Forçando salvamento local na pasta 'uploads' do serviço de entregas.`); // Corrigido
-  
-  // O serviço 'deliveries-routes-service' expõe a pasta 'uploads'.
+  if (!file) {
+    return null;
+  }
+
+  const shouldUseGCS = hasGoogleCredentials && bucket;
+
+  if (shouldUseGCS) {
+    try {
+      const uniqueName = `${folder}/${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname || '')}`;
+
+      return await new Promise((resolve, reject) => {
+        const blob = bucket.file(uniqueName);
+        const blobStream = blob.createWriteStream({
+          resumable: false,
+          contentType: file.mimetype || 'application/octet-stream',
+        });
+
+        blobStream.on('error', (err) => {
+          reject(err);
+        });
+
+        blobStream.on('finish', async () => {
+          const backendUrl = buildReceiptViewUrl(blob.name);
+          console.log('[GCS] File stored in bucket.', { storagePath: blob.name });
+          resolve({ publicUrl: backendUrl || blob.name, gcsPath: blob.name });
+        });
+
+        blobStream.end(file.buffer);
+      });
+    } catch (err) {
+      console.error('[Receipts] Failed to upload file to GCS. Falling back to local storage.', err);
+    }
+  }
+
+  console.warn('[Receipts] Google Cloud Storage unavailable. Saving receipt locally.');
+
   const uploadDir = path.resolve(__dirname, `../deliveries-routes-service/uploads/${folder}`);
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
   }
-  
-  const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname || '.jpg')}`;
+
+  const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname || '.jpg')}`;
   const filePath = path.join(uploadDir, uniqueName);
   fs.writeFileSync(filePath, file.buffer);
 
-  // A URL p�blica passa a utilizar o endpoint de visualiza��o do pr�prio servi�o de recibos.
   const viewUrl = buildReceiptViewUrl(filePath);
   const publicUrl = viewUrl || filePath;
 
-  // gcsPath mant�m o caminho completo para uso interno do `serveReceiptFile`.
   return { publicUrl, gcsPath: filePath };
-
-
-  return new Promise((resolve, reject) => {
-    if (!file) return resolve(null);
-
-    const uniqueName = `${folder}/${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
-    const blob = bucket.file(uniqueName);
-    const blobStream = blob.createWriteStream({
-      resumable: false,
-      contentType: file.mimetype
-    });
-
-    blobStream.on('error', err => {
-      console.error('Falha ao enviar arquivo ao GCS (uniform bucket):', {
-        code: err.code,
-        message: err.message,
-        reason: err.errors && err.errors[0] ? err.errors[0].reason : undefined,
-      });
-      reject(err);
-    });
-    blobStream.on('finish', async () => {
-      const backendUrl = buildReceiptViewUrl(blob.name);
-      console.log(
-        '[GCS] Arquivo salvo.',
-        {
-          storagePath: blob.name,
-          publicBase: RECEIPTS_PUBLIC_BASE_URL || 'http://localhost:3004'
-        }
-      );
-      resolve({ publicUrl: backendUrl, gcsPath: blob.name });
-    });
-
-    blobStream.end(file.buffer);
-  });
 }
+
 
 const swaggerDefinition = {
   openapi: '3.0.0',
