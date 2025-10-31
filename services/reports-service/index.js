@@ -497,7 +497,7 @@ ${deliveryVehicleSelect}
         u_drv.full_name AS driver_record_name,
         u_drv.username AS driver_record_username,
         u_direct.full_name AS direct_name,
-        u_direct.username AS direct_username,
+        u_direct.username AS direct_username
       FROM delivery_notes dn
       LEFT JOIN drivers drv ON drv.id = dn.driver_id
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
