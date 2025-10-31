@@ -1205,7 +1205,8 @@ app.get('/api/deliveries/recent-alerts', authorize(['ADMIN', 'SUPERVISOR']), asy
     `;
 
     if (companyId) {
-      query += ' WHERE company_id = ?';
+      // Por padrão retornamos somente os alertas ocorridos no dia (até meia-noite)
+      query += ' WHERE company_id = ? AND DATE(occurred_at) = CURDATE()';
     } else {
       // Se não houver companyId (improvável para ADMIN/SUPERVISOR), não retorna nada.
       return res.json({ success: true, data: [] });
