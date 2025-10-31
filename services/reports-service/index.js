@@ -381,7 +381,7 @@ app.get('/api/dashboard/kpis', authorize(['ADMIN', 'SUPERVISOR', 'MASTER']), asy
     try {
       // Build a list of active drivers combining routes and tracking points
       const activeDriversListSql = `
-        SELECT DISTINCT d.id, u.full_name as name, COALESCE(tp.last_ts, r.start_datetime, d.last_location_update) as last_seen
+        SELECT DISTINCT d.id, u.full_name as name, COALESCE(tp.last_ts, r.start_datetime, d.last_location_update) as last_seen, tp.speed
         FROM drivers d
         JOIN users u ON d.user_id = u.id
         LEFT JOIN (
