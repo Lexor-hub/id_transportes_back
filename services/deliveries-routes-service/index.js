@@ -1072,7 +1072,13 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
     let query = `
       SELECT 
         d.*,
-        COALESCE(u.full_name, u_resolved.full_name) as driver_name,
+        COALESCE(
+          u.full_name,
+          u_resolved.full_name,
+          drv.name,
+          u.username,
+          u.email
+        ) AS driver_name,
         drv.user_id as driver_user_id,
         CONCAT(v.plate, ' - ', v.model) as vehicle_label,
         c.name as client_name,
