@@ -467,37 +467,44 @@ app.get('/api/reports/driver-performance', authorize(['ADMIN', 'SUPERVISOR', 'MA
       driversHasCompanyId ? [companyId] : []
     );
 
-    const deliveryVehicleSelect = deliveryNotesHasVehicleId
+    const vehicleColumns = deliveryNotesHasVehicleId
       ? [
-          '        dn.vehicle_id AS delivery_vehicle_id,',
-          vehiclesHasPlate ? '        v_delivery.plate AS delivery_vehicle_plate,' : '        NULL AS delivery_vehicle_plate,',
-          vehiclesHasModel ? '        v_delivery.model AS delivery_vehicle_model,' : '        NULL AS delivery_vehicle_model,',
-          vehiclesHasBrand ? '        v_delivery.brand AS delivery_vehicle_brand' : '        NULL AS delivery_vehicle_brand',
-        ].join('\n')
+          'dn.vehicle_id AS delivery_vehicle_id',
+          vehiclesHasPlate ? 'v_delivery.plate AS delivery_vehicle_plate' : 'NULL AS delivery_vehicle_plate',
+          vehiclesHasModel ? 'v_delivery.model AS delivery_vehicle_model' : 'NULL AS delivery_vehicle_model',
+          vehiclesHasBrand ? 'v_delivery.brand AS delivery_vehicle_brand' : 'NULL AS delivery_vehicle_brand',
+        ]
       : [
-          '        NULL AS delivery_vehicle_id,',
-          '        NULL AS delivery_vehicle_plate,',
-          '        NULL AS delivery_vehicle_model,',
-          '        NULL AS delivery_vehicle_brand',
-        ].join('\n');
+          'NULL AS delivery_vehicle_id',
+          'NULL AS delivery_vehicle_plate',
+          'NULL AS delivery_vehicle_model',
+          'NULL AS delivery_vehicle_brand',
+        ];
+
+    const selectColumns = [
+      'dn.id',
+      'dn.driver_id AS raw_driver_id',
+      ...vehicleColumns,
+      'COALESCE(dn.delivery_date_actual, dn.created_at) AS delivery_datetime',
+      'DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE() AS is_today',
+      `YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())\n          AND MONTH(COALESCE(dn.delivery_date_actual, dn.created_at)) = MONTH(CURDATE()) AS is_current_month`,
+      'drv.id AS driver_record_id',
+      'drv.user_id AS driver_user_id',
+      'u_drv.full_name AS driver_record_name',
+      'u_drv.username AS driver_record_username',
+      'u_direct.full_name AS direct_name',
+      'u_direct.username AS direct_username',
+    ];
+
+    const selectClause = selectColumns
+      .map((column) => `        ${column}`)
+      .join(',\n');
 
     const deliveryVehicleJoin = deliveryNotesHasVehicleId ? '\n      LEFT JOIN vehicles v_delivery ON v_delivery.id = dn.vehicle_id' : '';
 
     const deliveriesSql = `
       SELECT
-        dn.id,
-        dn.driver_id AS raw_driver_id,
-${deliveryVehicleSelect}
-        COALESCE(dn.delivery_date_actual, dn.created_at) AS delivery_datetime,
-        DATE(COALESCE(dn.delivery_date_actual, dn.created_at)) = CURDATE() AS is_today,
-        YEAR(COALESCE(dn.delivery_date_actual, dn.created_at)) = YEAR(CURDATE())
-          AND MONTH(COALESCE(dn.delivery_date_actual, dn.created_at)) = MONTH(CURDATE()) AS is_current_month,
-        drv.id AS driver_record_id,
-        drv.user_id AS driver_user_id,
-        u_drv.full_name AS driver_record_name,
-        u_drv.username AS driver_record_username,
-        u_direct.full_name AS direct_name,
-        u_direct.username AS direct_username
+${selectClause}
       FROM delivery_notes dn
       LEFT JOIN drivers drv ON drv.id = dn.driver_id
       LEFT JOIN users u_drv ON u_drv.id = drv.user_id
@@ -510,6 +517,7 @@ ${deliveryVehicleSelect}
           )
         )
     `;
+
     const [deliveryRows] = await pool.query(deliveriesSql, deliveryNotesHasCompanyId ? [companyId] : []);
 
     const occurrencesSql = `
