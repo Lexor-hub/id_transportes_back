@@ -1073,11 +1073,11 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
     let query = `
       SELECT 
         d.*,
-        COALESCE(u_resolved.full_name, u.full_name, d_direct.name) as driver_name,
+        COALESCE(u.full_name, u_resolved.full_name) as driver_name,
         drv.user_id as driver_user_id,
         CONCAT(v.plate, ' - ', v.model) as vehicle_label,
-        COALESCE(c.name, d.client_name_extracted) as client_name,
-        COALESCE(c.address, d.delivery_address) as client_address,
+        c.name as client_name,
+        c.address as client_address,
         dr.id AS receipt_id,
         dr.image_url AS receipt_image_url,
         CASE WHEN dr.id IS NOT NULL THEN 1 ELSE 0 END AS has_receipt
@@ -1087,9 +1087,8 @@ app.get('/api/deliveries', authorize(['ADMIN', 'SUPERVISOR', 'DRIVER']), async (
           FROM routes WHERE status = 'IN_PROGRESS' GROUP BY driver_id, vehicle_id
       ) latest_route ON latest_route.driver_id = d.driver_id
       LEFT JOIN vehicles v ON latest_route.vehicle_id = v.id
-      LEFT JOIN drivers drv ON drv.company_id = d.company_id AND drv.id = d.driver_id
-      LEFT JOIN drivers d_direct ON d_direct.id = d.driver_id
       LEFT JOIN users u ON d.driver_id = u.id
+      LEFT JOIN drivers drv ON drv.company_id = d.company_id AND drv.id = d.driver_id
       LEFT JOIN users u_resolved ON drv.user_id = u_resolved.id
       LEFT JOIN clients c ON d.client_id = c.id
       LEFT JOIN delivery_receipts dr ON dr.delivery_note_id = d.id
